@@ -1,0 +1,61 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/*.tar.gz
+dist/*.whl
+downloads/
+eggs/
+.eggs/
+parts/
+var/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Logs & Runtime
+*.log
+.nova.pid
+logs/*
+!logs/.gitkeep
+
+# Application Database & Local Secrets
+data/*.db*
+data/.secret.key
+data/attachments/*
+!data/attachments/.gitkeep
+
+# Node & Frontend
+node_modules/
+frontend/node_modules/
+.npm
+.yarn
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+.env
+
+# Scratch workspace
+scratch/*
+!scratch/.gitkeep

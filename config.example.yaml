@@ -1,0 +1,20 @@
+server:
+  host: "127.0.0.1"
+  port: 46815
+  allow_lan: false
+
+execution:
+  default_permission_mode: "allow_safe"  # ask_every_time | allow_safe | session_approval | manual
+  timeout_seconds: 60
+  max_output_bytes: 500000
+
+security:
+  dpapi_encryption: true
+  enforce_strict_workspace: true
+
+providers:
+  default_provider: "ollama-local"
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+  lm_studio:
+    base_url: "http://127.0.0.1:1234/v1"

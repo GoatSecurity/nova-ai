@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NOVA v1.0.0 — Autonomous Local AI Workstation</title>
+  <link rel="icon" type="image/png" href="/assets/logo.png">
+  <link rel="apple-touch-icon" href="/assets/logo.png">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="/assets/tailwind.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'Consolas', 'Courier New', 'monospace']
+          },
+          colors: {
+            brand: {
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/app.css?v=3.5.5">
+</head>
+<body class="bg-[#0d0d0f] text-zinc-100 flex h-screen w-screen overflow-hidden select-none m-0 p-0 font-sans antialiased">
+  
+  <!-- Premium NOVA Branded Animated Loading Screen -->
+  <div id="app-loading-screen" class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0d0d0f] transition-opacity duration-300">
+    <!-- Glowing Orbital Neon Logo Core -->
+    <div class="relative flex items-center justify-center w-28 h-28 mb-5">
+      <div class="absolute inset-1 rounded-full bg-gradient-to-tr from-violet-600/35 via-indigo-500/25 to-cyan-500/35 blur-2xl animate-pulse"></div>
+      <div class="absolute inset-2 rounded-full border border-violet-500/30 border-t-cyan-400/70 animate-spin" style="animation-duration: 3.5s;"></div>
+      <div class="relative w-20 h-20 rounded-2xl bg-[#13131a]/90 border border-white/10 flex items-center justify-center shadow-[0_0_32px_rgba(139,92,246,0.28)] p-2">
+        <img src="/assets/logo.png" alt="NOVA" class="w-16 h-16 object-contain select-none drop-shadow-[0_0_16px_rgba(56,189,248,0.45)]" />
+      </div>
+    </div>
+
+    <!-- Title & Identity -->
+    <div class="flex items-center gap-2 mb-2">
+      <span class="text-xl font-bold tracking-tight text-white font-sans">NOVA</span>
+      <span class="text-[11px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300 font-mono border border-violet-500/30">WORKSTATION</span>
+    </div>
+
+    <!-- Status text with live feedback -->
+    <div class="text-xs text-zinc-400 flex items-center gap-2 font-mono mt-1">
+      <span class="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+      <span id="loading-status-text">Initializing local agentic environment...</span>
+    </div>
+
+    <!-- Animated Smooth Progress Bar -->
+    <div class="w-56 h-1 bg-white/5 rounded-full overflow-hidden mt-5">
+      <div id="loading-progress-bar" class="h-full bg-gradient-to-r from-violet-500 via-indigo-400 to-cyan-400 rounded-full transition-all duration-300" style="width: 25%;"></div>
+    </div>
+  </div>
+
+  <!-- Main Application Container -->
+  <div id="app" class="flex h-full w-full"></div>
+  <script>
+    // Fail-safe: ensure loading screen is always dismissed even if slow network
+    setTimeout(function() {
+      var loader = document.getElementById('app-loading-screen');
+      if (loader && loader.parentNode) {
+        loader.style.transition = 'opacity 0.4s ease';
+        loader.style.opacity = '0';
+        loader.style.pointerEvents = 'none';
+        setTimeout(function() { try { loader.remove(); } catch(e){} }, 400);
+      }
+    }, 4000);
+  </script>
+  <script src="/assets/app.js?v=3.9.4"></script>
+</body>
+</html>
