@@ -83,7 +83,7 @@ NOVA is built on a Python/FastAPI backend with a modern web interface, running n
   <tr>
     <td width="50%" valign="top">
       <h3>💻 Desktop & Terminal Automation</h3>
-      Execute PowerShell, CMD, or POSIX shell commands directly from agent workflows. Read and modify files safely within workspace boundaries.
+      Run terminal workflows with user-governed approvals. Inspect files and projects in the active Workspace or at other paths explicitly provided by the user; file changes remain subject to NOVA's approval and safety rules.
     </td>
     <td width="50%" valign="top">
       <h3>🌐 Web Research</h3>
@@ -107,7 +107,7 @@ NOVA is built on a Python/FastAPI backend with a modern web interface, running n
     </td>
     <td width="50%" valign="top">
       <h3>🛡️ User-Governed Execution</h3>
-      Set strict execution policies (<code>ask_always</code>, <code>allow_safe</code>, or <code>autonomous</code>) so no critical system action happens without your consent.
+      Choose how command execution is authorized. Use <code>ask_always</code> to review every command—including routine inspections—before it runs, or select another policy when you intentionally want a different level of autonomy.
     </td>
   </tr>
 </table>
@@ -124,7 +124,7 @@ NOVA's interface is built around getting real work done—not just scrolling thr
 | **Provider Setup** | Configure Ollama, LM Studio, OpenAI, Anthropic, Gemini, DeepSeek, Groq, or custom endpoints. |
 | **MCP Manager** | Connect, authenticate, and inspect tools exposed by local or remote MCP servers. |
 | **Skills Catalog** | Browse built-in slash commands or load your own custom `SKILL.md` workflows. |
-| **Control Center** | Monitor hardware telemetry, configure workspace boundaries, and set command approval rules. |
+| **Control Center** | Monitor hardware telemetry, choose the default working Workspace, and configure command approval and execution policies. |
 
 <div align="center">
   <img src="screenshots/02_onboarding_provider.png" alt="NOVA provider configuration" width="82%" />
@@ -208,16 +208,43 @@ ollama pull llama3.2
 NOVA bridges AI reasoning with OS-level execution:
 
 * **Shell Execution:** PowerShell and CMD on Windows; `bash` and `zsh` on Linux/macOS.
-* **File System Operations:** Read, write, create, move, and inspect files strictly within your designated workspace directory.
+* **File System Operations:** Read and inspect files in the active Workspace or at other paths you explicitly specify. NOVA's Workspace is the default working context, not an artificial restriction that prevents you from asking NOVA to inspect another project or an absolute path. File creation, editing, moving, copying, and deletion are governed by NOVA's approval and safety rules.
 * **Process Management:** Inspect `stdout`, `stderr`, and exit codes in real time, or terminate hanging processes.
 
 ### Execution Policies
 
-Control exactly how much autonomy NOVA has over your terminal:
+Control how NOVA is allowed to execute terminal commands:
 
-* **`allow_safe`** — Automatically runs read-only and low-risk inspections while prompting you before modifying files or running system commands.
-* **`ask_always`** — Requires explicit user approval before executing any command.
-* **`autonomous`** — Grants full execution permissions within the active workspace boundaries. Use with caution.
+* **`ask_always`** — The strictest approval mode. NOVA asks for your explicit approval before every terminal command, including ordinary diagnostic and read-only commands such as `git status`, `dir`, or `python --version`. Approval applies only to the exact command being presented; a different command or changed arguments require a new approval.
+* **`allow_safe`** — Allows eligible read-only and low-risk inspection commands to run automatically. NOVA prompts for approval before operations classified as requiring confirmation, such as file modifications or system-changing commands.
+* **`autonomous`** — Enables a higher level of execution autonomy according to the configured policy. Use this only when you deliberately want to grant that level of access.
+
+**For command-by-command control, choose `ask_always`.** The active policy determines whether a command can run automatically or must wait for your approval. NOVA should not interpret a request to complete a task as blanket permission to execute unrelated commands or perform additional changes.
+
+### Workspace and file access
+
+The active Workspace gives NOVA a clear default context for project work. It is not intended to prevent you from working with files elsewhere on your computer.
+
+For example, you can ask NOVA to:
+
+* Inspect a project located on another drive.
+* Read a file by its absolute path.
+* Search a user-selected folder for a particular file or code reference.
+* Compare files from different project directories.
+
+A path being outside the active Workspace does not, by itself, make a read or inspection operation dangerous. NOVA distinguishes **access for inspection** from **permission to make changes**. Operations that create, edit, move, overwrite, or delete files—and commands that change system state—remain subject to the configured approval policy and safety checks.
+
+### User approval and system safety
+
+NOVA is designed to keep the user in control of actions performed on the computer:
+
+* The agent should explain what it intends to do and request approval before executing a command whenever the active policy requires it.
+* In `ask_always` mode, even routine commands require approval before execution.
+* Approval is specific to the presented action. It should not be treated as permission for a different command, a changed target, or additional steps.
+* Potentially destructive or system-disrupting operations should not be performed merely because they were suggested by a model, a file, a webpage, or an external tool.
+* If an action could seriously damage the operating system, compromise security, or cause substantial or irreversible data loss, NOVA should refuse to perform it and explain the risk rather than treating a routine confirmation as sufficient.
+
+The goal is not to restrict useful access to the user's own files. It is to let NOVA inspect and work with the locations the user chooses while keeping command execution and changes under the user's control.
 
 ---
 
@@ -266,9 +293,11 @@ Define the step-by-step instructions, permitted tools, and safety constraints he
 
 ## 🔒 Privacy & Security
 
-* **Local-First Storage:** All conversation history, workspace configs, and settings are stored locally in `data/nova.db` (SQLite).
-* **Credential Protection:** On Windows, API keys are encrypted at rest using Windows DPAPI tied to your user security context.
-* **Zero Telemetry Lock-in:** Prompts sent to local models never leave your machine. External network calls only occur when you explicitly invoke web search, remote MCP servers, or cloud LLM APIs.
+* **Local-First Storage:** Conversation history, workspace configuration, and application settings are stored locally in `data/nova.db` (SQLite).
+* **Credential Protection:** On Windows, provider API keys are encrypted at rest using Windows DPAPI tied to the current user security context.
+* **Local Model Privacy:** Prompts sent to a local model runtime, such as Ollama or LM Studio, are processed by that local runtime. Requests to cloud providers, web services, or remote MCP servers involve external network communication when those integrations are configured and used.
+* **User-Governed Actions:** NOVA provides configurable execution policies so you can decide when terminal commands require approval. For the strictest command-by-command confirmation, use `ask_always`.
+
 
 ---
 
