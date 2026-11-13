@@ -4,7 +4,11 @@ import sys
 import time
 import base64
 import ctypes
-from typing import Dict, Any, Optional
+import webbrowser
+import subprocess
+from typing import Dict, Any, Optional, Tuple
+from ctypes import wintypes
+from PIL import Image
 from backend.app.tools.base import BaseTool, ToolParameter
 from backend.app.tools.registry import tool_registry
 from backend.app.core.logging import logger
@@ -50,58 +54,214 @@ VK_MAPPING = {
     "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B
 }
 
+_last_frame_info: Dict[str, int] = {}
 
-def _get_screen_size():
+
+def _ensure_dpi_awareness():
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+
+def _get_screen_size() -> Tuple[int, int]:
+    _ensure_dpi_awareness()
     if sys.platform == "win32":
         try:
             u32 = ctypes.windll.user32
-            return u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
+            w = u32.GetSystemMetrics(0)
+            h = u32.GetSystemMetrics(1)
+            if w > 0 and h > 0:
+                return w, h
         except Exception:
-            return 1920, 1080
+            pass
     return 1920, 1080
 
 
-def _take_screenshot() -> Dict[str, Any]:
-    w, h = _get_screen_size()
+def _capture_screen_bitblt() -> Optional[Image.Image]:
+    """Capture full desktop using native Windows GDI BitBlt for maximum speed & reliability."""
+    if sys.platform != "win32":
+        return None
     try:
-        from PIL import ImageGrab
-        im = ImageGrab.grab()
-        buf = io.BytesIO()
-        if im.width > 1280:
-            scale = 1280.0 / im.width
-            im = im.resize((int(im.width * scale), int(im.height * scale)))
-        im.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return {
-            "status": "success",
-            "action": "screenshot",
-            "width": w,
-            "height": h,
-            "image_base64": b64,
-            "mime_type": "image/png",
-            "message": f"Captured desktop screen ({w}x{h})."
-        }
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        w, h = _get_screen_size()
+
+        hwin = user32.GetDesktopWindow()
+        hwindc = user32.GetWindowDC(hwin)
+        if not hwindc:
+            return None
+
+        srcdc = gdi32.CreateCompatibleDC(hwindc)
+        bmp = gdi32.CreateCompatibleBitmap(hwindc, w, h)
+        gdi32.SelectObject(srcdc, bmp)
+
+        # SRCCOPY = 0x00CC0020, CAPTUREBLT = 0x40000000
+        gdi32.BitBlt(srcdc, 0, 0, w, h, hwindc, 0, 0, 0x00CC0020 | 0x40000000)
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG), ('biHeight', wintypes.LONG),
+                ('biPlanes', wintypes.WORD), ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
+                ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', wintypes.LONG),
+                ('biYPelsPerMeter', wintypes.LONG), ('biClrUsed', wintypes.DWORD), ('biClrImportant', wintypes.DWORD)
+            ]
+
+        bmi = BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.biWidth = w
+        bmi.biHeight = -h  # top-down DIB
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0
+
+        buf = ctypes.create_string_buffer(w * h * 4)
+        got = gdi32.GetDIBits(srcdc, bmp, 0, h, buf, ctypes.byref(bmi), 0)
+
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(srcdc)
+        user32.ReleaseDC(hwin, hwindc)
+
+        if got == h:
+            return Image.frombuffer('RGBA', (w, h), buf, 'raw', 'BGRA', 0, 1).convert('RGB')
     except Exception as e:
+        logger.warning(f"Native BitBlt screen capture failed: {e}")
+    return None
+
+
+def _take_screenshot() -> Dict[str, Any]:
+    global _last_frame_info
+    w, h = _get_screen_size()
+    im = None
+
+    # 1. Native Windows GDI BitBlt
+    im = _capture_screen_bitblt()
+
+    # 2. Pillow ImageGrab fallback
+    if im is None:
+        try:
+            from PIL import ImageGrab
+            im = ImageGrab.grab(all_screens=True).convert('RGB')
+        except Exception:
+            pass
+
+    # 3. PowerShell Drawing fallback
+    if im is None and sys.platform == "win32":
+        try:
+            tmp_png = os.path.join(os.environ.get("TEMP", "."), f"nova_screen_{os.getpid()}.png")
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "Add-Type -AssemblyName System.Drawing; "
+                f"$s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                f"$b = New-Object System.Drawing.Bitmap $s.Width, $s.Height; "
+                f"$g = [System.Drawing.Graphics]::FromImage($b); "
+                f"$g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size); "
+                f"$b.Save('{tmp_png}', [System.Drawing.Imaging.ImageFormat]::Png); "
+                f"$g.Dispose(); $b.Dispose();"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+            if os.path.isfile(tmp_png):
+                im = Image.open(tmp_png).convert('RGB')
+                os.remove(tmp_png)
+        except Exception:
+            pass
+
+    if im is None:
         return {
             "status": "warning",
             "action": "screenshot",
-            "width": w,
-            "height": h,
+            "screen_width": w,
+            "screen_height": h,
             "image_base64": None,
-            "message": f"Screen capture attempted on desktop ({w}x{h}). Note: Interactive GUI session required for full frame grab. Details: {str(e)}"
+            "message": f"Could not capture desktop screen ({w}x{h}). Please ensure an interactive desktop session is active."
         }
+
+    # Store frame info and scale if needed (only downscale if screen is > 1920)
+    frame_w = im.width
+    frame_h = im.height
+    if frame_w > 1920:
+        scale = 1920.0 / frame_w
+        frame_w = 1920
+        frame_h = int(im.height * scale)
+        im = im.resize((frame_w, frame_h), Image.Resampling.LANCZOS)
+
+    _last_frame_info = {
+        "screen_w": w,
+        "screen_h": h,
+        "frame_w": frame_w,
+        "frame_h": frame_h
+    }
+
+    buf = io.BytesIO()
+    im.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return {
+        "status": "success",
+        "action": "screenshot",
+        "screen_width": w,
+        "screen_height": h,
+        "frame_width": frame_w,
+        "frame_height": frame_h,
+        "image_base64": b64,
+        "mime_type": "image/png",
+        "message": f"Captured desktop screen. Screen: {w}x{h}, Visual frame: {frame_w}x{frame_h}. Coordinates you specify will be automatically mapped to physical screen pixels."
+    }
+
+
+def _map_coords(x: Optional[Any], y: Optional[Any]) -> Tuple[Optional[int], Optional[int]]:
+    """Smart coordinate mapping supporting normalized, visual frame, and screen pixels."""
+    if x is None or y is None:
+        return None, None
+
+    screen_w, screen_h = _get_screen_size()
+    frame_w = _last_frame_info.get("frame_w", screen_w)
+    frame_h = _last_frame_info.get("frame_h", screen_h)
+
+    try:
+        xf = float(x)
+        yf = float(y)
+    except (ValueError, TypeError):
+        return None, None
+
+    # Normalized coordinates (0.0 to 1.0)
+    if 0.0 <= xf <= 1.0 and 0.0 <= yf <= 1.0:
+        rx = int(round(xf * screen_w))
+        ry = int(round(yf * screen_h))
+        return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
+
+    # Visual frame space (scaled down from screen)
+    if frame_w != screen_w and (xf <= frame_w and yf <= frame_h):
+        scale_x = screen_w / float(frame_w)
+        scale_y = screen_h / float(frame_h)
+        rx = int(round(xf * scale_x))
+        ry = int(round(yf * scale_y))
+        return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
+
+    # Direct physical screen coordinates
+    rx = int(round(xf))
+    ry = int(round(yf))
+    return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
 
 
 def _mouse_move(x: int, y: int):
     if sys.platform == "win32":
-        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+        mx, my = _map_coords(x, y)
+        if mx is not None and my is not None:
+            ctypes.windll.user32.SetCursorPos(mx, my)
 
 
-def _mouse_click(x: Optional[int] = None, y: Optional[int] = None, button: str = "left", double: bool = False):
+def _mouse_click(x: Optional[Any] = None, y: Optional[Any] = None, button: str = "left", double: bool = False):
     if sys.platform == "win32":
         u32 = ctypes.windll.user32
         if x is not None and y is not None:
-            u32.SetCursorPos(int(x), int(y))
+            mx, my = _map_coords(x, y)
+            if mx is not None and my is not None:
+                u32.SetCursorPos(mx, my)
         time.sleep(0.04)
 
         b_lower = (button or "left").lower()
@@ -123,14 +283,21 @@ def _mouse_click(x: Optional[int] = None, y: Optional[int] = None, button: str =
 def _mouse_drag(start_x: int, start_y: int, end_x: int, end_y: int):
     if sys.platform == "win32":
         u32 = ctypes.windll.user32
-        u32.SetCursorPos(int(start_x), int(start_y))
+        sx, sy = _map_coords(start_x, start_y)
+        ex, ey = _map_coords(end_x, end_y)
+        if sx is None or sy is None:
+            return
+        ex = ex if ex is not None else sx
+        ey = ey if ey is not None else sy
+
+        u32.SetCursorPos(sx, sy)
         time.sleep(0.04)
         u32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         time.sleep(0.04)
         steps = 10
         for i in range(1, steps + 1):
-            curr_x = int(start_x + (end_x - start_x) * (i / steps))
-            curr_y = int(start_y + (end_y - start_y) * (i / steps))
+            curr_x = int(sx + (ex - sx) * (i / steps))
+            curr_y = int(sy + (ey - sy) * (i / steps))
             u32.SetCursorPos(curr_x, curr_y)
             time.sleep(0.015)
         u32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
@@ -149,7 +316,7 @@ def _keyboard_type(text: str):
             code = ord(ch)
             u32.keybd_event(0, code, KEYEVENTF_UNICODE, 0)
             u32.keybd_event(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0)
-            time.sleep(0.01)
+            time.sleep(0.008)
 
 
 def _keyboard_press(key_combo: str):
@@ -167,7 +334,7 @@ def _keyboard_press(key_combo: str):
 
         for vk in vks:
             u32.keybd_event(vk, 0, 0, 0)
-        time.sleep(0.05)
+        time.sleep(0.06)
         for vk in reversed(vks):
             u32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
@@ -182,15 +349,17 @@ tool_desktop_control = BaseTool(
         ToolParameter(
             name="action",
             type="string",
-            description="The desktop action to perform: 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'wait'.",
-            enum=["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "wait"]
+            description="The desktop action to perform: 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
+            enum=["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
         ),
-        ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width)", required=False),
-        ToolParameter(name="y", type="integer", description="Y coordinate on screen (0 to screen height)", required=False),
+        ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
+        ToolParameter(name="y", type="integer", description="Y coordinate on screen (0 to screen height) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="end_x", type="integer", description="Target X coordinate for drag operations", required=False),
         ToolParameter(name="end_y", type="integer", description="Target Y coordinate for drag operations", required=False),
-        ToolParameter(name="text", type="string", description="Text to type using keyboard", required=False),
-        ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'ctrl+c', 'ctrl+v', 'alt+f4')", required=False),
+        ToolParameter(name="text", type="string", description="Text to type using keyboard, or URL for 'open_url', or app name for 'open_app'", required=False),
+        ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4')", required=False),
+        ToolParameter(name="press_enter", type="boolean", description="Whether to press Enter after typing text", required=False),
+        ToolParameter(name="clear_first", type="boolean", description="Whether to clear existing text (Ctrl+A, Backspace) before typing", required=False),
         ToolParameter(name="scroll_clicks", type="integer", description="Scroll amount: positive to scroll up, negative to scroll down", required=False),
         ToolParameter(name="wait_seconds", type="number", description="Seconds to pause/wait (e.g. 1.0)", required=False)
     ]
@@ -205,6 +374,8 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
     end_y = arguments.get("end_y")
     text = arguments.get("text")
     key = arguments.get("key")
+    press_enter = bool(arguments.get("press_enter", False))
+    clear_first = bool(arguments.get("clear_first", False))
     scroll_clicks = arguments.get("scroll_clicks")
     wait_sec = arguments.get("wait_seconds", 0.5)
 
@@ -214,20 +385,24 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
 
         elif action == "click":
             _mouse_click(x, y, button="left", double=False)
-            return {"status": "success", "action": "click", "x": x, "y": y, "message": f"Left clicked at ({x}, {y})"}
+            mx, my = _map_coords(x, y)
+            return {"status": "success", "action": "click", "screen_x": mx, "screen_y": my, "message": f"Left clicked at ({mx}, {my})"}
 
         elif action == "double_click":
             _mouse_click(x, y, button="left", double=True)
-            return {"status": "success", "action": "double_click", "x": x, "y": y, "message": f"Double clicked at ({x}, {y})"}
+            mx, my = _map_coords(x, y)
+            return {"status": "success", "action": "double_click", "screen_x": mx, "screen_y": my, "message": f"Double clicked at ({mx}, {my})"}
 
         elif action == "right_click":
             _mouse_click(x, y, button="right", double=False)
-            return {"status": "success", "action": "right_click", "x": x, "y": y, "message": f"Right clicked at ({x}, {y})"}
+            mx, my = _map_coords(x, y)
+            return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
 
         elif action == "move":
             if x is not None and y is not None:
                 _mouse_move(x, y)
-                return {"status": "success", "action": "move", "x": x, "y": y, "message": f"Moved mouse to ({x}, {y})"}
+                mx, my = _map_coords(x, y)
+                return {"status": "success", "action": "move", "screen_x": mx, "screen_y": my, "message": f"Moved mouse to ({mx}, {my})"}
             return {"status": "error", "message": "Missing x or y coordinate for move"}
 
         elif action == "drag":
@@ -244,16 +419,65 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
             return {"status": "success", "action": "scroll", "clicks": clicks}
 
         elif action == "type":
-            if text:
-                _keyboard_type(text)
-                return {"status": "success", "action": "type", "text": text}
-            return {"status": "error", "message": "Missing text parameter to type"}
+            if not text:
+                return {"status": "error", "message": "Missing text parameter to type"}
+
+            # Auto-focus if coordinates are provided
+            if x is not None and y is not None:
+                _mouse_click(x, y, button="left", double=False)
+                time.sleep(0.12)
+
+            if clear_first:
+                _keyboard_press("ctrl+a")
+                time.sleep(0.04)
+                _keyboard_press("backspace")
+                time.sleep(0.04)
+
+            _keyboard_type(text)
+
+            if press_enter:
+                time.sleep(0.08)
+                _keyboard_press("enter")
+
+            return {
+                "status": "success",
+                "action": "type",
+                "text": text,
+                "clicked_at": [x, y] if (x is not None and y is not None) else None,
+                "pressed_enter": press_enter
+            }
 
         elif action == "press_key":
             if key:
                 _keyboard_press(key)
                 return {"status": "success", "action": "press_key", "key": key}
             return {"status": "error", "message": "Missing key parameter"}
+
+        elif action == "open_url":
+            target_url = text or (arguments.get("url") if "url" in arguments else None)
+            if not target_url:
+                return {"status": "error", "message": "Missing url or text parameter for open_url"}
+            if not (target_url.startswith("http://") or target_url.startswith("https://")):
+                target_url = "https://" + target_url
+            webbrowser.open(target_url)
+            time.sleep(1.2)
+            return {
+                "status": "success",
+                "action": "open_url",
+                "url": target_url,
+                "message": f"Opened '{target_url}' in browser. Call action='screenshot' to observe the loaded page."
+            }
+
+        elif action == "open_app":
+            app_name = text or arguments.get("name") or "browser"
+            subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+            time.sleep(1.0)
+            return {
+                "status": "success",
+                "action": "open_app",
+                "name": app_name,
+                "message": f"Launched application '{app_name}'. Call action='screenshot' to locate it on screen."
+            }
 
         elif action == "wait":
             time.sleep(float(wait_sec or 1.0))
