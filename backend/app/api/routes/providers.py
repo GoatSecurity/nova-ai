@@ -96,6 +96,33 @@ async def delete_provider(prov_id: str):
     # Return 200 even if already deleted for idempotent deletion (prevents double-delete 404s)
     return {"status": "deleted", "id": prov_id, "existed": deleted}
 
+class UpdateModelRequest(BaseModel):
+    display_name: Optional[str] = None
+    context_length: Optional[int] = None
+    supports_tools: Optional[bool] = None
+    supports_vision: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+
+@router.patch("/models/{model_id:path}")
+async def update_model(model_id: str, req: UpdateModelRequest):
+    updates = req.model_dump(exclude_unset=True)
+    if not updates:
+        return {"status": "no_change", "id": model_id}
+    from backend.app.database.connection import get_db
+    async with get_db() as db:
+        fields = []
+        vals = []
+        for k, v in updates.items():
+            if isinstance(v, bool):
+                v = 1 if v else 0
+            fields.append(f"{k} = ?")
+            vals.append(v)
+        vals.append(model_id)
+        vals.append(model_id)
+        await db.execute(f"UPDATE provider_models SET {', '.join(fields)} WHERE id = ? OR model_name = ?;", tuple(vals))
+        await db.commit()
+    return {"status": "updated", "id": model_id, "updates": updates}
+
 @router.delete("/models/{model_id:path}")
 async def delete_model(model_id: str):
     deleted = await ProviderRepository.delete_model(model_id)
@@ -119,22 +146,47 @@ async def sync_provider_models(prov_id: str):
         synced = await ProviderRepository.sync_models(prov_id, discovered)
         return {"status": "success", "count": len(synced), "models": synced, "message": f"Successfully synced {len(synced)} models from {adapter.name}."}
     
-    # Fallback default model placeholder when server is offline or doesn't support models endpoint
-    safe_name = adapter.name.lower().replace(" ", "-")
-    fallback = [{
-        "model_name": safe_name,
-        "display_name": f"{adapter.name} (Default)",
-        "context_length": 8192,
-        "supports_tools": True,
-        "supports_vision": False,
-        "is_local": adapter.is_local_url()
-    }]
-    synced = await ProviderRepository.sync_models(prov_id, fallback)
     return {
         "status": "warning",
         "count": 0,
-        "models": synced,
-        "message": f"Could not connect to {adapter.base_url} to discover models. Created default placeholder '{safe_name}'. Please ensure your model server is running."
+        "models": [],
+        "message": f"Could not discover any models from {adapter.base_url}. Please ensure your model server is running."
+    }
+
+@router.post("/providers/sync-all")
+async def sync_all_providers():
+    import asyncio
+    providers = await ProviderRepository.list_providers()
+
+    async def _sync_single(prov):
+        p_id = prov["id"] if isinstance(prov, dict) else prov.id
+        p_name = prov["name"] if isinstance(prov, dict) else prov.name
+        adapter = await ProviderRegistry.get_adapter_for_provider(p_id)
+        if not adapter:
+            return {"provider_id": p_id, "name": p_name, "status": "error", "count": 0, "message": "Adapter not found"}
+        try:
+            discovered = await asyncio.wait_for(adapter.discover_models(), timeout=7.0)
+            if discovered:
+                synced = await ProviderRepository.sync_models(p_id, discovered)
+                return {"provider_id": p_id, "name": p_name, "status": "success", "count": len(synced), "models": synced}
+            else:
+                return {"provider_id": p_id, "name": p_name, "status": "no_models", "count": 0, "models": []}
+        except asyncio.TimeoutError:
+            return {"provider_id": p_id, "name": p_name, "status": "timeout", "count": 0, "message": "Discovery timed out"}
+        except Exception as e:
+            return {"provider_id": p_id, "name": p_name, "status": "error", "count": 0, "message": str(e)}
+
+    results = await asyncio.gather(*[_sync_single(p) for p in providers])
+    total_models = sum(r.get("count", 0) for r in results)
+    synced_providers = sum(1 for r in results if r.get("status") == "success")
+
+    return {
+        "status": "success",
+        "total_providers": len(providers),
+        "synced_providers": synced_providers,
+        "total_models": total_models,
+        "results": results,
+        "message": f"Synced {total_models} models across {synced_providers} online providers."
     }
 
 @router.post("/providers/{prov_id}/models")

@@ -86,7 +86,32 @@ class GeminiAdapter(BaseProviderAdapter):
                     # Tool feedbacks and secondary system messages become user turns in Gemini
                     raw_contents.append({"role": "user", "parts": [{"text": content}]})
             elif role == "user":
-                raw_contents.append({"role": "user", "parts": [{"text": content}]})
+                if isinstance(content, list):
+                    gemini_parts = []
+                    for p in content:
+                        if isinstance(p, dict):
+                            p_type = p.get("type")
+                            if p_type == "text":
+                                gemini_parts.append({"text": p.get("text", "")})
+                            elif p_type == "image_url":
+                                url = p.get("image_url", {}).get("url", "")
+                                if url.startswith("data:"):
+                                    try:
+                                        header, b64_data = url.split(",", 1)
+                                        mime = header.split(";")[0].replace("data:", "").strip()
+                                        gemini_parts.append({
+                                            "inline_data": {
+                                                "mime_type": mime or "image/png",
+                                                "data": b64_data
+                                            }
+                                        })
+                                    except Exception:
+                                        pass
+                        elif isinstance(p, str):
+                            gemini_parts.append({"text": p})
+                    raw_contents.append({"role": "user", "parts": gemini_parts})
+                else:
+                    raw_contents.append({"role": "user", "parts": [{"text": content}]})
             elif role == "assistant":
                 raw_contents.append({"role": "model", "parts": [{"text": content}]})
             elif role in ("tool", "function"):

@@ -247,6 +247,17 @@ NOVA is designed to keep the user in control of actions performed on the compute
 The goal is not to restrict useful access to the user's own files. It is to let NOVA inspect and work with the locations the user chooses while keeping command execution and changes under the user's control.
 
 ---
+## 🖱️ Desktop GUI & Screen Automation (Computer Use)
+
+NOVA features an autonomous desktop control loop exclusively available for vision-capable models:
+
+* **Real-time Screen Inspection:** Captures high-resolution desktop screenshots and feeds them directly into the vision model loop.
+* **Mouse & Keyboard Control:** Precision mouse movement, single/double click, right-click, drag-and-drop, scroll, text typing, and multi-key keyboard shortcuts (e.g. Ctrl+C, Win+R, Alt+Tab).
+* **Vision-Gated Safety:** The desktop_control tool is only exposed when the active model supports vision (supports_vision = 1), preventing model confusion.
+* **Interactive Tasks:** Ask the agent to open apps, browse pages, click buttons, or perform graphical workflows directly on your machine.
+
+---
+
 
 ## 🔌 Model Context Protocol (MCP)
 
@@ -309,7 +320,7 @@ You can install NOVA directly on **Windows 10 / 11 (64-bit)** without installing
 
 | Package | Architecture | Size | SHA-256 | Download |
 |---|---|---|---|---|
-| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `65.03 MB` | `62615c3debbcac646b9447b82fb8f2561fc30be0e8a2c4e578239f1fa6cdd424` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
+| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `65.06 MB` | `22e5fd80dd9a497204f9f6536d05edf2a8ae6968b50e7380a610693dc58bc96b` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
 
 1. Download **`nova-windows-64-installer.exe`** from **[GitHub Releases](https://github.com/GoatSecurity/nova-ai/releases/latest)** and double-click to launch the setup wizard.
 2. Choose your installation directory (defaults to `%LOCALAPPDATA%\Programs\NOVA` — no Administrator rights required), select **Desktop Shortcut** / **Launch After Install**, and click **Install NOVA**.

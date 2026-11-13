@@ -21,44 +21,86 @@ class OllamaAdapter(BaseProviderAdapter):
         headers.update(self.custom_headers)
         return headers
 
+    def _get_candidate_tags_urls(self) -> List[str]:
+        base = self.base_url.rstrip("/")
+        clean_base = base.split('/v1')[0].rstrip('/')
+        urls = [
+            f"{clean_base}/api/tags",
+            f"{base}/api/tags",
+            f"{base}/models",
+            f"{clean_base}/v1/models",
+            f"{clean_base}/models"
+        ]
+        seen = set()
+        return [u for u in urls if not (u in seen or seen.add(u))]
+
     async def test_connection(self) -> Tuple[bool, str, Dict[str, Any]]:
-        url = f"{self.base_url}/api/tags"
-        try:
-            async with self.get_client(timeout=5.0) as client:
-                resp = await client.get(url, headers=self._get_headers())
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = data.get("models", [])
-                    return True, f"Ollama is running locally. Found {len(models)} installed models.", {"models_count": len(models)}
-                return False, f"Ollama returned HTTP {resp.status_code}", {"status_code": resp.status_code}
-        except Exception as e:
-            return False, f"Ollama connection failed (is Ollama service running on {self.base_url}?): {str(e)}", {"error": str(e)}
+        candidate_urls = self._get_candidate_tags_urls()
+        last_error = "Connection could not be established."
+        last_status = None
+        for url in candidate_urls:
+            try:
+                async with self.get_client(timeout=5.0) as client:
+                    resp = await client.get(url, headers=self._get_headers())
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        models = data.get("models") or data.get("data") or []
+                        return True, f"Ollama/Model service is online. Found {len(models)} installed models.", {"models_count": len(models)}
+                    last_status = resp.status_code
+                    last_error = f"HTTP {resp.status_code}"
+            except Exception as e:
+                last_error = str(e)
+        return False, f"Connection failed: {last_error}", {"status_code": last_status}
 
     async def discover_models(self) -> List[Dict[str, Any]]:
-        url = f"{self.base_url}/api/tags"
-        try:
-            async with self.get_client(timeout=5.0) as client:
-                resp = await client.get(url, headers=self._get_headers())
-                if resp.status_code != 200:
-                    return []
-                data = resp.json()
-                models = data.get("models", [])
-                result = []
-                for m in models:
-                    name = m.get("name", "")
-                    details = m.get("details", {})
-                    result.append({
-                        "model_name": name,
-                        "display_name": f"{name} ({details.get('parameter_size', 'local')})",
-                        "context_length": 8192,
-                        "supports_tools": True,
-                        "supports_vision": "llava" in name.lower() or "vision" in name.lower(),
-                        "is_local": True
-                    })
-                return result
-        except Exception as e:
-            logger.warning(f"Ollama discover error: {e}")
-            return []
+        candidate_urls = self._get_candidate_tags_urls()
+        for url in candidate_urls:
+            try:
+                async with self.get_client(timeout=5.0) as client:
+                    resp = await client.get(url, headers=self._get_headers())
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    models = data.get("models") or data.get("data") or []
+                    if not isinstance(models, list) or len(models) == 0:
+                        continue
+                    result = []
+                    for m in models:
+                        name = ""
+                        details = {}
+                        caps = []
+                        if isinstance(m, str):
+                            name = m
+                        elif isinstance(m, dict):
+                            name = m.get("name") or m.get("model") or m.get("id") or ""
+                            details = m.get("details", {})
+                            caps = m.get("capabilities", [])
+                        if not name:
+                            continue
+
+                        has_vis = False
+                        if caps and any(str(c).lower() in ("multimodal", "vision", "image") for c in caps):
+                            has_vis = True
+                        elif caps and any(str(c).lower() in ("completion", "chat", "text") for c in caps):
+                            has_vis = False
+                        else:
+                            has_vis = any(k in name.lower() for k in ["llava", "vision", "vl", "minicpm", "bakllava", "internvl", "clip", "multimodal", "omni", "llama-3.2"])
+
+                        p_size = details.get('parameter_size') or 'local'
+                        disp = f"{name} ({p_size})" if p_size != 'local' else name
+                        result.append({
+                            "model_name": name,
+                            "display_name": disp,
+                            "context_length": 8192,
+                            "supports_tools": True,
+                            "supports_vision": has_vis,
+                            "is_local": True
+                        })
+                    if result:
+                        return result
+            except Exception as e:
+                logger.debug(f"Ollama candidate url error ({url}): {e}")
+        return []
 
     async def chat_stream(
         self,
@@ -70,10 +112,42 @@ class OllamaAdapter(BaseProviderAdapter):
         enable_thinking: Optional[bool] = None
     ) -> AsyncGenerator[StreamChunk, None]:
         url = f"{self.base_url}/api/chat"
-        # Convert messages if needed
+        converted_messages = []
+        for m in messages:
+            c = m.get("content")
+            if isinstance(c, list):
+                text_parts = []
+                image_parts = []
+                for p in c:
+                    if isinstance(p, dict):
+                        p_type = p.get("type")
+                        if p_type == "text":
+                            text_parts.append(p.get("text", ""))
+                        elif p_type == "image_url":
+                            img_data_url = p.get("image_url", {}).get("url", "")
+                            if img_data_url.startswith("data:"):
+                                try:
+                                    _, b64_data = img_data_url.split(",", 1)
+                                    image_parts.append(b64_data)
+                                except Exception:
+                                    pass
+                            elif img_data_url:
+                                image_parts.append(img_data_url)
+                    elif isinstance(p, str):
+                        text_parts.append(p)
+                m_copy = {
+                    "role": m.get("role", "user"),
+                    "content": "\n".join(text_parts)
+                }
+                if image_parts:
+                    m_copy["images"] = image_parts
+                converted_messages.append(m_copy)
+            else:
+                converted_messages.append(m)
+
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": converted_messages,
             "stream": True,
             "options": {
                 "temperature": temperature

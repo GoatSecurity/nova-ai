@@ -65,14 +65,42 @@ class AnthropicAdapter(BaseProviderAdapter):
     ) -> AsyncGenerator[StreamChunk, None]:
         url = f"{self.base_url}/messages"
 
-        # Separate system messages
+        # Separate system messages and convert multimodal image parts
         system_prompt = ""
         filtered_messages = []
         for m in messages:
-            if m["role"] == "system":
-                system_prompt += m["content"] + "\n\n"
+            if m.get("role") == "system":
+                system_prompt += str(m.get("content", "")) + "\n\n"
             else:
-                filtered_messages.append(m)
+                c = m.get("content")
+                if isinstance(c, list):
+                    anthropic_parts = []
+                    for p in c:
+                        if isinstance(p, dict):
+                            p_type = p.get("type")
+                            if p_type == "text":
+                                anthropic_parts.append({"type": "text", "text": p.get("text", "")})
+                            elif p_type == "image_url":
+                                url = p.get("image_url", {}).get("url", "")
+                                if url.startswith("data:"):
+                                    try:
+                                        header, b64_data = url.split(",", 1)
+                                        mime = header.split(";")[0].replace("data:", "").strip()
+                                        anthropic_parts.append({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": mime or "image/png",
+                                                "data": b64_data
+                                            }
+                                        })
+                                    except Exception:
+                                        pass
+                        elif isinstance(p, str):
+                            anthropic_parts.append({"type": "text", "text": p})
+                    filtered_messages.append({"role": m.get("role", "user"), "content": anthropic_parts})
+                else:
+                    filtered_messages.append(m)
 
         payload: Dict[str, Any] = {
             "model": model,

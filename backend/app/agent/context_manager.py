@@ -3,11 +3,27 @@ from backend.app.core.config import settings
 
 class ContextManager:
     @staticmethod
-    def estimate_tokens(text: str) -> int:
-        if not text:
+    def estimate_tokens(content: Any) -> int:
+        if not content:
             return 0
-        # Roughly 1 token ~= 4 characters for English / code
-        return max(1, len(text) // 4)
+        if isinstance(content, str):
+            # Roughly 1 token ~= 4 characters for English / code
+            return max(1, len(content) // 4)
+        if isinstance(content, list):
+            total = 0
+            for part in content:
+                if isinstance(part, dict):
+                    p_type = part.get("type")
+                    if p_type == "text":
+                        total += max(1, len(part.get("text", "")) // 4)
+                    elif p_type == "image_url":
+                        total += 1200
+                    else:
+                        total += max(1, len(str(part)) // 4)
+                elif isinstance(part, str):
+                    total += max(1, len(part) // 4)
+            return max(1, total)
+        return max(1, len(str(content)) // 4)
 
     @staticmethod
     def calculate_conversation_tokens(messages: List[Dict[str, Any]]) -> int:
@@ -65,15 +81,27 @@ class ContextManager:
         for i, m in enumerate(pruned):
             if i == 0 and m.get("role") == "system":
                 continue
-            content = m.get("content") or ""
-            if len(content) > MAX_SINGLE_MSG_CHARS:
-                half = MAX_SINGLE_MSG_CHARS // 2
-                omitted = len(content) - MAX_SINGLE_MSG_CHARS
-                m["content"] = content[:half] + f"\n\n... [Content truncated: {omitted} characters omitted to preserve token budget] ...\n\n" + content[-half:]
-                content = m["content"]
+            content = m.get("content")
+            if isinstance(content, str):
+                if len(content) > MAX_SINGLE_MSG_CHARS:
+                    half = MAX_SINGLE_MSG_CHARS // 2
+                    omitted = len(content) - MAX_SINGLE_MSG_CHARS
+                    m["content"] = content[:half] + f"\n\n... [Content truncated: {omitted} characters omitted to preserve token budget] ...\n\n" + content[-half:]
+                    content = m["content"]
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        txt = part.get("text", "")
+                        if len(txt) > MAX_SINGLE_MSG_CHARS:
+                            half = MAX_SINGLE_MSG_CHARS // 2
+                            omitted = len(txt) - MAX_SINGLE_MSG_CHARS
+                            part["text"] = txt[:half] + f"\n\n... [Content truncated: {omitted} characters omitted to preserve token budget] ...\n\n" + txt[-half:]
 
-            if m.get("role") == "assistant" and not content.strip():
-                m["content"] = "[Tool call requested]"
+            if m.get("role") == "assistant":
+                if isinstance(content, str) and not content.strip():
+                    m["content"] = "[Tool call requested]"
+                elif isinstance(content, list) and not content:
+                    m["content"] = "[Tool call requested]"
             elif m.get("role") == "system" and i > 0:
                 # Middle system message -> user role
                 m["role"] = "user"
