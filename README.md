@@ -82,8 +82,8 @@ NOVA is built on a Python/FastAPI backend with a modern web interface, running n
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>💻 Desktop & Terminal Automation</h3>
-      Run terminal workflows with user-governed approvals. Inspect files and projects in the active Workspace or at other paths explicitly provided by the user; file changes remain subject to NOVA's approval and safety rules.
+      <h3>💻 Desktop GUI & Terminal Automation</h3>
+      Operate Windows applications (Photoshop, browsers, IDEs) using mouse, keyboard, and real-time screen OCR (`find_text`, `ocr`). Run terminal workflows with user-governed approvals and zero raw JSON tool leakage in chat.
     </td>
     <td width="50%" valign="top">
       <h3>🌐 Web Research</h3>
@@ -320,12 +320,12 @@ You can install NOVA directly on **Windows 10 / 11 (64-bit)** without installing
 
 | Package | Architecture | Size | SHA-256 | Download |
 |---|---|---|---|---|
-| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `81.50 MB` | `54ff3b9fc221053057078f5081a9e654b15d949fce420719ffb2ccd09fea0f1e` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
+| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `81.50 MB` | `3390fa29d66f3a94847a3f177df7c67da1ad4d83f0b0ef743520f3bed560dac0` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
 
 1. Download **`nova-windows-64-installer.exe`** from **[GitHub Releases](https://github.com/GoatSecurity/nova-ai/releases/latest)** and double-click to launch the setup wizard.
 2. Choose your installation directory (defaults to `%LOCALAPPDATA%\Programs\NOVA` — no Administrator rights required), select **Desktop Shortcut** / **Launch After Install**, and click **Install NOVA**.
 3. Open **NOVA** from your Desktop shortcut or Start Menu. NOVA launches inside a native desktop workstation powered by a background engine on a random free localhost port (no extra browser windows opened).
-4. **Clean Uninstall:** Uninstall anytime via **Windows Settings → Apps → Installed Apps (`NOVA`)** or `uninstall.exe` to cleanly remove the application, shortcuts, logs, and local database.
+4. **Clean Uninstall with Data Retention:** Uninstall anytime via **Windows Settings → Apps → Installed Apps (`NOVA`)** or `uninstall.exe`. The uninstaller prompts you to choose whether to delete or preserve your local database, chat history, custom skills, and configuration cache.
 
 *(A 32-bit Windows build will be added in a future release.)*
 

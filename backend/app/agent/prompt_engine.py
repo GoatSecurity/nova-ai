@@ -50,7 +50,7 @@ The VERY FIRST string of your output for this first message MUST be a smart, con
 
 STRUCTURED_TOOL_FALLBACK_INSTRUCTIONS = """
 [TOOL CALLING FORMAT]
-If you decide to invoke a tool, you may either use native tool calling OR output a JSON block formatted exactly as:
+If you decide to invoke a tool, prefer native tool calling whenever supported. If your runtime uses text fallback, output ONLY the tool invocation block without explanatory chat prelude:
 ```json
 {
   "tool_call": {
@@ -59,6 +59,8 @@ If you decide to invoke a tool, you may either use native tool calling OR output
   }
 }
 ```
+CRITICAL DIRECTIVE: NEVER output raw tool JSON blocks or explain internal tool calls inside your visible chat responses to the user. Once tool execution finishes, deliver your final answer cleanly and naturally in the user's language.
+
 Available tools summary:
 {available_tools_summary}
 """

@@ -48,6 +48,44 @@ _TAG_SPLIT_RE = re.compile(r"<(/?(?:think|session_title|title))>", re.IGNORECASE
 
 
 
+def _strip_raw_tool_calls(text: str) -> str:
+    """
+    Strips raw tool invocation payloads (such as ```json {"tool_call": ...} ``` or
+    {"tool_call": ...} or <tool_call>...</tool_call>) from model output so raw
+    machine-level tool calls never leak into user chat messages.
+    """
+    if not text:
+        return ""
+
+    # 1. Stripping code blocks with tool_call or function_call or direct tool JSON
+    cleaned = re.sub(
+        r"```(?:json)?\s*\{\s*(?:\"tool_call\"|\"function_call\"|\"call\"|\"action\"|\"name\"\s*:)\s*[\s\S]*?\}\s*```",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 2. Stripping XML style tags: <tool_call>...</tool_call>, <function_call>...</function_call>, <tool>...</tool>, <call>...</call>
+    cleaned = re.sub(
+        r"\s*<(?:tool_call|function_call|tool|call)>[\s\S]*?</(?:tool_call|function_call|tool|call)>\s*",
+        "\n\n",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
+    # 3. Stripping standalone JSON objects with "tool_call" or "function_call"
+    cleaned = re.sub(
+        r"\{\s*\"(?:tool_call|function_call)\"\s*:\s*\{[\s\S]*?\}\s*\}",
+        "",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
+    # Clean up excess whitespace / blank lines leftover from stripped blocks
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _strip_internal_tags(text: str) -> Tuple[str, str]:
 
     """Removes internal tags (<think>, <session_title>, <title>) and returns (clean_text, extracted_thoughts)."""
@@ -228,7 +266,12 @@ def _compute_safe_stream_views(raw_text: str) -> Tuple[str, str]:
 
     # Strip complete leading leaked meta-monologue lines live, and hold back ambiguous partial first line
 
+    visible_str = _strip_raw_tool_calls(visible_str)
     visible_str, leaked_prefix = _strip_leading_meta_monologue(visible_str)
+    low_vis_trimmed = visible_str.lstrip().lower()
+    tool_prefixes = ("```json", "```{", "<tool_call", "<function_call", "<tool", '{"tool_call"', '{"name":')
+    if any(low_vis_trimmed.startswith(p) for p in tool_prefixes) and not any(c in low_vis_trimmed for c in ("```\n", "```\r\n", "</tool_call>", "</function_call>", "</tool>")):
+        return "", think_str
 
     if leaked_prefix:
 
@@ -1289,9 +1332,12 @@ class AgentOrchestrator:
                         f"\n\n### Desktop GUI & Screen Automation Instructions:\n"
                         f"You have access to the `desktop_control` tool to visually inspect and operate the user's desktop mouse and keyboard on Windows.\n"
                         f"- Current Screen Resolution: {scr_w}x{scr_h}. Coordinates you specify are automatically mapped to physical screen pixels.\n"
+                        f"- Instant Screen OCR & UI Element Detection:\n"
+                        f"  * Call `desktop_control(action='find_text', text='Search', click=True)` to instantly locate any button, menu, or text on screen (like in Photoshop, Chrome, etc.) and click it automatically in one step!\n"
+                        f"  * Call `desktop_control(action='ocr')` to scan the screen and receive a list of all visible text elements with their exact (x, y) coordinates.\n"
                         f"- Visual Inspection:\n"
                         f"  * Call `desktop_control(action='screenshot')` to capture and view the desktop screen at any point.\n"
-                        f"  * Always examine the visual screenshot to find exact visual element coordinates before clicking.\n"
+                        f"  * Always examine the visual screenshot or OCR results to find exact visual element coordinates before clicking.\n"
                         f"- Interacting with Applications & Web Browsers:\n"
                         f"  * To search Google or open a website: Call `desktop_control(action='open_url', text='https://www.google.com')`. This opens the user's browser directly to that site! Then call `action='screenshot'` to view the page.\n"
                         f"  * To click and type into any field (search box, form, address bar): Use `desktop_control(action='type', x=..., y=..., text='...', press_enter=True)`. It will automatically click at (x, y) to focus the box, type the text, and press Enter.\n"
@@ -1639,6 +1685,8 @@ class AgentOrchestrator:
 
                             clean_so_far, _ = _strip_internal_tags(current_turn_text)
 
+                            clean_so_far = _strip_raw_tool_calls(clean_so_far)
+
                             clean_so_far, _ = _strip_leading_meta_monologue(clean_so_far)
 
                             combined_so_far = (cumulative_assistant_text.strip() + ("\n\n" if cumulative_assistant_text.strip() and clean_so_far else "") + clean_so_far).strip()
@@ -1790,6 +1838,8 @@ class AgentOrchestrator:
                 # Strip internal <think>, <session_title>, <title> tags, placeholders, and leaked English monologue cleanly
 
                 clean_assistant_text, _ = _strip_internal_tags(current_turn_text)
+
+                clean_assistant_text = _strip_raw_tool_calls(clean_assistant_text)
 
                 clean_assistant_text = _scrub_internal_markers(clean_assistant_text)
 
@@ -2356,6 +2406,8 @@ class AgentOrchestrator:
                                 ))
 
                     clean_synth, _ = _strip_internal_tags(synth_raw)
+
+                    clean_synth = _strip_raw_tool_calls(clean_synth)
 
                     clean_synth = _scrub_internal_markers(clean_synth)
 

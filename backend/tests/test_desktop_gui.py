@@ -54,3 +54,56 @@ async def test_desktop_control_mouse_and_key():
     assert res_type.get("status") == "success"
     assert res_type.get("text") == "test"
     assert res_type.get("clicked_at") == [100, 100]
+
+@pytest.mark.asyncio
+async def test_desktop_control_ocr_and_find_text():
+    # Test OCR scan
+    res_ocr = await tool_registry.execute_tool("desktop_control", {"action": "ocr"}, {})
+    assert res_ocr.get("status") in ("success", "error")
+    if res_ocr.get("status") == "success":
+        assert "elements" in res_ocr
+        assert "total_elements" in res_ocr
+
+    # Test find_text query
+    res_find = await tool_registry.execute_tool(
+        "desktop_control",
+        {"action": "find_text", "text": "NonExistentDummyTargetXYZ", "click": False},
+        {}
+    )
+    assert res_find.get("status") in ("warning", "error")
+    assert res_find.get("query") == "NonExistentDummyTargetXYZ"
+
+def test_strip_raw_tool_calls():
+    from backend.app.agent.orchestrator import _strip_raw_tool_calls
+
+    # Test fenced code block
+    fenced = """Here is my plan:
+```json
+{
+  "tool_call": {
+    "name": "web_search",
+    "arguments": {"query": "Iran news"}
+  }
+}
+```
+Here is the real answer."""
+    assert _strip_raw_tool_calls(fenced) == "Here is my plan:\n\nHere is the real answer."
+
+    # Test XML tool call
+    xml_tool = """Analysis complete.
+<tool_call>
+{"name": "fetch_web_page", "arguments": {"url": "https://test.com"}}
+</tool_call>
+Have a great day!"""
+    assert _strip_raw_tool_calls(xml_tool) == "Analysis complete.\n\nHave a great day!"
+
+    # Test pure tool call with no text
+    pure = """```json
+{
+  "tool_call": {
+    "name": "desktop_control",
+    "arguments": {"action": "click", "x": 100, "y": 100}
+  }
+}
+```"""
+    assert _strip_raw_tool_calls(pure) == ""

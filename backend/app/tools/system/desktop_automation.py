@@ -55,6 +55,38 @@ VK_MAPPING = {
 }
 
 _last_frame_info: Dict[str, int] = {}
+_ocr_engine = None
+
+
+def _attach_thread_to_input_desktop() -> bool:
+    """Ensures current thread is attached to the interactive input desktop (winsta0/default)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        user32.OpenInputDesktop.restype = wintypes.HANDLE
+        user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        user32.SetThreadDesktop.restype = wintypes.BOOL
+        user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+        # 0x1FF = DESKTOP_ALL
+        h_input = user32.OpenInputDesktop(0, False, 0x1FF)
+        if h_input:
+            return bool(user32.SetThreadDesktop(h_input))
+    except Exception as e:
+        logger.debug(f"Failed to attach thread desktop: {e}")
+    return False
+
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _ocr_engine = RapidOCR()
+        except Exception as e:
+            logger.warning(f"Failed to initialize RapidOCR: {e}")
+            return None
+    return _ocr_engine
 
 
 def _ensure_dpi_awareness():
@@ -133,35 +165,53 @@ def _capture_screen_bitblt() -> Optional[Image.Image]:
     return None
 
 
-def _take_screenshot() -> Dict[str, Any]:
-    global _last_frame_info
-    w, h = _get_screen_size()
+def _capture_raw_screen_image() -> Optional[Image.Image]:
+    """Captures desktop screen using multi-tier fallback with interactive desktop attachment."""
+    _ensure_dpi_awareness()
+    _attach_thread_to_input_desktop()
     im = None
 
-    # 1. Native Windows GDI BitBlt
-    im = _capture_screen_bitblt()
+    # 1. Pillow ImageGrab with interactive desktop
+    try:
+        from PIL import ImageGrab
+        im = ImageGrab.grab()
+        c = im.getcolors(maxcolors=2)
+        if c is not None and len(c) == 1:
+            im = None
+    except Exception:
+        im = None
 
-    # 2. Pillow ImageGrab fallback
     if im is None:
         try:
             from PIL import ImageGrab
-            im = ImageGrab.grab(all_screens=True).convert('RGB')
+            im = ImageGrab.grab(all_screens=True)
+            c = im.getcolors(maxcolors=2)
+            if c is not None and len(c) == 1:
+                im = None
         except Exception:
-            pass
+            im = None
+
+    # 2. Native BitBlt
+    if im is None:
+        im = _capture_screen_bitblt()
+        if im is not None:
+            c = im.getcolors(maxcolors=2)
+            if c is not None and len(c) == 1:
+                im = None
 
     # 3. PowerShell Drawing fallback
     if im is None and sys.platform == "win32":
         try:
-            tmp_png = os.path.join(os.environ.get("TEMP", "."), f"nova_screen_{os.getpid()}.png")
+            tmp_png = os.path.join(os.environ.get("TEMP", "."), f"nova_scr_{os.getpid()}_{int(time.time()*1000)}.png")
             ps_cmd = (
                 "Add-Type -AssemblyName System.Windows.Forms; "
                 "Add-Type -AssemblyName System.Drawing; "
-                f"$s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
-                f"$b = New-Object System.Drawing.Bitmap $s.Width, $s.Height; "
-                f"$g = [System.Drawing.Graphics]::FromImage($b); "
-                f"$g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size); "
+                "$s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                "$b = New-Object System.Drawing.Bitmap $s.Width, $s.Height; "
+                "$g = [System.Drawing.Graphics]::FromImage($b); "
+                "$g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size); "
                 f"$b.Save('{tmp_png}', [System.Drawing.Imaging.ImageFormat]::Png); "
-                f"$g.Dispose(); $b.Dispose();"
+                "$g.Dispose(); $b.Dispose();"
             )
             subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
             if os.path.isfile(tmp_png):
@@ -169,6 +219,14 @@ def _take_screenshot() -> Dict[str, Any]:
                 os.remove(tmp_png)
         except Exception:
             pass
+
+    return im
+
+
+def _take_screenshot() -> Dict[str, Any]:
+    global _last_frame_info
+    w, h = _get_screen_size()
+    im = _capture_raw_screen_image()
 
     if im is None:
         return {
@@ -210,6 +268,103 @@ def _take_screenshot() -> Dict[str, Any]:
         "image_base64": b64,
         "mime_type": "image/png",
         "message": f"Captured desktop screen. Screen: {w}x{h}, Visual frame: {frame_w}x{frame_h}. Coordinates you specify will be automatically mapped to physical screen pixels."
+    }
+
+
+def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_click: bool = False) -> Dict[str, Any]:
+    """Runs RapidOCR on current screen to find UI buttons, text elements, and exact coordinates."""
+    im = _capture_raw_screen_image()
+    if im is None:
+        return {"status": "error", "message": "Failed to capture desktop screen for OCR."}
+
+    w, h = im.size
+    ocr = _get_ocr_engine()
+    if ocr is None:
+        return {"status": "error", "message": "RapidOCR engine is not available."}
+
+    try:
+        import numpy as np
+        img_np = np.array(im)
+        res, _ = ocr(img_np)
+    except Exception as e:
+        return {"status": "error", "message": f"OCR processing failed: {e}"}
+
+    items = []
+    if res:
+        for box, text_val, score in res:
+            cx = int((box[0][0] + box[2][0]) / 2)
+            cy = int((box[0][1] + box[2][1]) / 2)
+            bw = int(abs(box[1][0] - box[0][0]))
+            bh = int(abs(box[2][1] - box[1][1]))
+            items.append({
+                "text": str(text_val).strip(),
+                "x": cx,
+                "y": cy,
+                "width": bw,
+                "height": bh,
+                "score": round(float(score), 3),
+                "box": [[int(pt[0]), int(pt[1])] for pt in box]
+            })
+
+    if query:
+        q_clean = query.strip().lower()
+        exact_matches = []
+        partial_matches = []
+        for it in items:
+            t_clean = it["text"].lower()
+            if t_clean == q_clean:
+                exact_matches.append(it)
+            elif q_clean in t_clean or any(word in t_clean for word in q_clean.split()):
+                partial_matches.append(it)
+
+        exact_matches.sort(key=lambda x: x["score"], reverse=True)
+        partial_matches.sort(key=lambda x: x["score"], reverse=True)
+        all_matches = exact_matches + partial_matches
+
+        if not all_matches:
+            return {
+                "status": "warning",
+                "action": "find_text",
+                "query": query,
+                "found": False,
+                "screen_width": w,
+                "screen_height": h,
+                "message": f"Text '{query}' was not found on screen. {len(items)} other text elements were detected."
+            }
+
+        best = all_matches[0]
+        result = {
+            "status": "success",
+            "action": "find_text",
+            "query": query,
+            "found": True,
+            "best_match": best,
+            "all_matches": all_matches[:5],
+            "total_matches": len(all_matches),
+            "screen_width": w,
+            "screen_height": h
+        }
+
+        if auto_click:
+            _mouse_click(best["x"], best["y"], button="left", double=double_click)
+            result["clicked"] = True
+            result["click_type"] = "double_click" if double_click else "click"
+            result["message"] = f"Found '{best['text']}' at ({best['x']}, {best['y']}) and clicked it."
+        else:
+            result["message"] = f"Found '{best['text']}' at ({best['x']}, {best['y']}). Use click at this coordinate or pass click=True."
+
+        return result
+
+    # No query: return detected text items sorted top-to-bottom, left-to-right
+    items.sort(key=lambda it: (it["y"] // 25, it["x"]))
+    return {
+        "status": "success",
+        "action": "ocr",
+        "screen_width": w,
+        "screen_height": h,
+        "total_elements": len(items),
+        "elements": items[:80],
+        "message": f"OCR detected {len(items)} text elements on screen."
     }
 
 
@@ -341,7 +496,7 @@ def _keyboard_press(key_combo: str):
 
 tool_desktop_control = BaseTool(
     name="desktop_control",
-    description="Controls the desktop GUI environment using mouse and keyboard actions, and captures screenshots for visual inspection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, etc.",
+    description="Controls the desktop GUI environment using mouse, keyboard, and screen OCR element detection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, etc. Supports finding UI elements by text label ('find_text') and executing actions in a single rapid turn.",
     category="system",
     risk_level="HIGH",
     requires_approval=False,
@@ -349,15 +504,17 @@ tool_desktop_control = BaseTool(
         ToolParameter(
             name="action",
             type="string",
-            description="The desktop action to perform: 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
-            enum=["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
+            description="The desktop action to perform: 'find_text' (locates text/buttons with OCR and optionally clicks), 'ocr' (scans screen and lists all UI text elements with coordinates), 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
+            enum=["find_text", "ocr", "screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
         ),
         ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="y", type="integer", description="Y coordinate on screen (0 to screen height) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="end_x", type="integer", description="Target X coordinate for drag operations", required=False),
         ToolParameter(name="end_y", type="integer", description="Target Y coordinate for drag operations", required=False),
-        ToolParameter(name="text", type="string", description="Text to type using keyboard, or URL for 'open_url', or app name for 'open_app'", required=False),
+        ToolParameter(name="text", type="string", description="Text to type using keyboard, or text to search for in 'find_text', or URL for 'open_url', or app name for 'open_app'", required=False),
         ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4')", required=False),
+        ToolParameter(name="click", type="boolean", description="Whether to automatically click the found text element when action='find_text'", required=False),
+        ToolParameter(name="double_click", type="boolean", description="Whether to double click instead of single click when action='find_text'", required=False),
         ToolParameter(name="press_enter", type="boolean", description="Whether to press Enter after typing text", required=False),
         ToolParameter(name="clear_first", type="boolean", description="Whether to clear existing text (Ctrl+A, Backspace) before typing", required=False),
         ToolParameter(name="scroll_clicks", type="integer", description="Scroll amount: positive to scroll up, negative to scroll down", required=False),
@@ -374,13 +531,21 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
     end_y = arguments.get("end_y")
     text = arguments.get("text")
     key = arguments.get("key")
+    click_flag = bool(arguments.get("click", False))
+    double_click_flag = bool(arguments.get("double_click", False))
     press_enter = bool(arguments.get("press_enter", False))
     clear_first = bool(arguments.get("clear_first", False))
     scroll_clicks = arguments.get("scroll_clicks")
     wait_sec = arguments.get("wait_seconds", 0.5)
 
     try:
-        if action == "screenshot":
+        if action == "find_text":
+            return _ocr_screen(query=text, auto_click=click_flag, double_click=double_click_flag)
+
+        elif action == "ocr":
+            return _ocr_screen(query=None, auto_click=False)
+
+        elif action == "screenshot":
             return _take_screenshot()
 
         elif action == "click":
