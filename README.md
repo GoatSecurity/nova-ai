@@ -1,429 +1,750 @@
+# NOVA — Your AI. Your Machine. Your Rules.
+
+### The Open-Source AI Agent That Can Actually Work on Your Computer.
+
+**NOVA is an open-source AI workstation and autonomous desktop agent for Windows, macOS, and Linux. Connect local LLMs, cloud AI models, MCP tools, and custom skills — then let your AI research the web, write code, manage files, execute terminal commands, and interact with real desktop applications.**
+
+Not just another AI chatbot.  
+Not just another API wrapper.  
+**A workstation that turns AI into an operator of your computer.**
+
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-2563eb?style=for-the-badge)](#platform-support)
+[![License](https://img.shields.io/badge/License-MIT-16a34a?style=for-the-badge)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=for-the-badge&logo=python&logoColor=white)](#run-from-source)
+[![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](#architecture)
+[![MCP](https://img.shields.io/badge/Integrations-MCP-6366f1?style=for-the-badge)](#mcp-integrations)
+[![Local AI](https://img.shields.io/badge/Local%20AI-Ollama%20%7C%20LM%20Studio-16a34a?style=for-the-badge)](#run-local-ai)
+
+[**Download for Windows**](https://github.com/GoatSecurity/nova-ai/releases/latest) · [**GitHub Repository**](https://github.com/GoatSecurity/nova-ai) · [**Installation Guide**](#get-started) · [**Features**](#what-makes-nova-different) · [**Security**](#security--privacy)
+
+---
+
+## The Future of Desktop AI Is More Than Chat.
+
+Most AI applications let you ask questions and receive answers.
+
+NOVA lets you give your AI a job.
+
+Tell it what you want done. It can plan the task, use available tools, inspect results, interact with your computer, and work through multiple steps.
+
+Whether you are developing software, managing files, researching information, automating repetitive workflows, or working with local AI models, NOVA gives you one unified environment to get things done.
+
 <div align="center">
 
-<img src="frontend/public/logo.png" alt="NOVA Logo" width="140" />
+![NOVA Main Workstation](screenshots/03_main_workstation.png)
 
-# NOVA
-
-### Your AI. Your Machine. Your Rules.
-
-**A local-first AI workstation for Windows, macOS, and Linux. Run open-source models on your own hardware, connect the AI providers you choose, research the web, work with files, and automate real tasks from one unified workspace.**
-
-<br />
-
-> **Stop renting every AI interaction. Run your own models with NOVA.**
->
-> Use compatible local models through Ollama or LM Studio with zero per-request cloud API charges. Connect cloud providers only when you choose to.
-
-<br />
-
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6?style=for-the-badge)
-![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Local AI](https://img.shields.io/badge/local%20AI-Ollama%20%7C%20LM%20Studio-16A34A?style=for-the-badge)
-![MCP](https://img.shields.io/badge/integrations-MCP-6366F1?style=for-the-badge)
-![Backend](https://img.shields.io/badge/backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
-[![Download Windows x64 Installer](https://img.shields.io/badge/Download-Windows%20x64%20Installer-0ea5e9?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/GoatSecurity/nova-ai/releases/latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-
-<br />
-
-**[GitHub Repository](https://github.com/GoatSecurity/nova-ai) · [Download Windows Installer](https://github.com/GoatSecurity/nova-ai/releases/latest) · [Explore the Features](#-what-you-can-do-with-nova) · [Run Local AI](#-run-local-ai-without-per-request-api-costs) · [Installation](#-get-started) · [Security](#-privacy--security) · [FAQ](#-frequently-asked-questions)**
-
-<br />
-
-<img src="screenshots/03_main_workstation.png" alt="NOVA AI workstation interface" width="100%" />
-
-<sub>Your models. Your tools. Your workflow — in one place.</sub>
+*Your models. Your tools. Your computer. One workstation.*
 
 </div>
 
----
+## What Makes NOVA Different?
 
-## Meet NOVA
+NOVA combines capabilities that are often scattered across multiple applications into one open-source AI workstation.
 
-NOVA brings AI chat, agent workflows, local and cloud models, web research, terminal access, file operations, and extensible tools together in one locally hosted workstation. Built around a lightweight Python/FastAPI core, NOVA runs across Windows, macOS, and Linux.
-
-Instead of being locked into a single AI provider or subscription, you choose how NOVA operates:
-
-- **Run local models** through [Ollama](https://ollama.com/) or [LM Studio](https://lmstudio.ai/).
-- **Connect cloud models** with your own API keys when you need frontier cloud capabilities.
-- **Give your agent tools** to inspect project files, execute commands, and complete multi-step tasks.
-- **Search the web** via built-in DuckDuckGo integration when real-time online information is needed.
-- **Extend the workspace** with Model Context Protocol (MCP) servers and custom Agent Skills.
-- **Stay in control** with configurable approval policies for command execution.
-
-NOVA is engineered for developers, researchers, makers, and power users who demand full control over their models, data paths, and local tooling.
-
----
-
-## 🖥️ Platform Support
-
-NOVA is built on a Python/FastAPI backend with a modern web interface, running natively across all major desktop operating systems. Windows serves as the primary target for deep OS-level integrations:
-
-| Platform | Support Level | Platform-Specific Notes |
-|---|---|---|
-| **Windows 10 / 11 (x64)** | Primary Platform | Dedicated standalone desktop installer ([`nova-windows-64-installer.exe`](https://github.com/GoatSecurity/nova-ai/releases/latest)) with zero-setup desktop app, plus full PowerShell/CMD & Windows DPAPI credential encryption. |
-| **macOS** | Supported (Core & POSIX) | Runs the full FastAPI core, local/cloud models, MCP, and native `zsh`/`bash` shell integrations. |
-| **Linux** | Supported (Core & POSIX) | Runs the full FastAPI core, local/cloud models, MCP, and native `bash` shell integrations. |
-
----
-
-## ✨ What You Can Do with NOVA
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>🧠 Local & Cloud AI</h3>
-      Seamlessly switch between local model runtimes and cloud APIs. Use your own endpoints, custom headers, and local weights.
-    </td>
-    <td width="50%" valign="top">
-      <h3>🤖 Agent Workflows</h3>
-      Assign NOVA a high-level goal. Let it break the task into steps, invoke tools, inspect outputs, and report back upon completion.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>💻 Desktop GUI & Terminal Automation</h3>
-      Operate Windows applications (Photoshop, browsers, IDEs) using mouse, keyboard, and real-time screen OCR (`find_text`, `ocr`). Run terminal workflows with user-governed approvals and zero raw JSON tool leakage in chat.
-    </td>
-    <td width="50%" valign="top">
-      <h3>🌐 Web Research</h3>
-      Retrieve live online information using built-in DuckDuckGo search to ground agent responses in current documentation and facts.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>🔌 MCP Integrations</h3>
-      Connect remote MCP servers or spawn local <code>stdio</code> MCP processes (via <code>npx</code>, <code>uvx</code>, or <code>python</code>) to expand your agent's toolset.
-    </td>
-    <td width="50%" valign="top">
-      <h3>🧩 Custom Agent Skills</h3>
-      Package recurring prompts and tool workflows into reusable Markdown manifests (<code>SKILL.md</code>) triggered via slash commands.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>📊 Workstation Controls</h3>
-      Monitor real-time system telemetry (CPU, RAM, network), manage workspaces, and inspect active agent processes from one dashboard.
-    </td>
-    <td width="50%" valign="top">
-      <h3>🛡️ User-Governed Execution</h3>
-      Choose how command execution is authorized. Use <code>ask_always</code> to review every command—including routine inspections—before it runs, or select another policy when you intentionally want a different level of autonomy.
-    </td>
-  </tr>
-</table>
-
----
-
-## 🖥️ Inside the Workstation
-
-NOVA's interface is built around getting real work done—not just scrolling through chat history.
-
-| Workspace Area | Purpose |
+| Capability | What NOVA brings |
 |---|---|
-| **Agent Workspace** | Chat with models, track multi-step task progress, and inspect live tool execution logs. |
-| **Provider Setup** | Configure Ollama, LM Studio, OpenAI, Anthropic, Gemini, DeepSeek, Groq, or custom endpoints. |
-| **MCP Manager** | Connect, authenticate, and inspect tools exposed by local or remote MCP servers. |
-| **Skills Catalog** | Browse built-in slash commands or load your own custom `SKILL.md` workflows. |
-| **Control Center** | Monitor hardware telemetry, choose the default working Workspace, and configure command approval and execution policies. |
+| AI Agent | Multi-step task execution and tool orchestration |
+| Computer Use | Visual desktop interaction using mouse and keyboard |
+| Local AI | Run models through Ollama and LM Studio |
+| Cloud AI | Connect multiple cloud AI providers |
+| Terminal Access | Execute PowerShell, CMD, Bash, and Zsh commands |
+| File Operations | Read, create, edit, move, and manage files |
+| Web Research | Search for current information using DuckDuckGo |
+| MCP | Connect external tools and services |
+| Agent Skills | Build reusable workflows with `SKILL.md` |
+| Desktop App | Native Windows workstation with a standalone installer |
+
+## Features
+
+### 1. AI Agent — Give It a Goal, Not Just a Prompt
+
+NOVA is designed around agent workflows rather than simple question-and-answer conversations.
+
+Give it a high-level task and let it work through the steps using available tools.
+
+Your agent can:
+
+- Break complex goals into actionable steps.
+- Read and inspect project files.
+- Execute terminal commands.
+- Search the web for relevant information.
+- Use connected MCP tools.
+- Apply custom agent skills.
+- Inspect command output and handle errors.
+- Report results and execution progress.
+
+The goal is simple: spend less time operating tools manually and more time getting work done.
+
+### 2. Computer Use — Let AI Operate Your Desktop
+
+This is where NOVA goes beyond traditional AI chat applications.
+
+With a compatible vision-capable model, NOVA can inspect your actual desktop and interact with graphical applications.
 
 <div align="center">
-  <img src="screenshots/02_onboarding_provider.png" alt="NOVA provider configuration" width="82%" />
-  <br />
-  <sub>Connect a local runtime or configure your preferred cloud provider.</sub>
+
+![NOVA Desktop Automation](screenshots/03_main_workstation.png)
+
+*Give your AI visual access to the desktop and tools to interact with it.*
+
 </div>
 
-<br />
+**Desktop automation capabilities:**
 
-<div align="center">
-  <img src="screenshots/04_mcp_servers.png" alt="NOVA MCP server management" width="82%" />
-  <br />
-  <sub>Extend NOVA with compatible MCP tools.</sub>
-</div>
+- Real-time screen inspection.
+- Mouse movement and clicking.
+- Single-click and double-click actions.
+- Right-click and context menus.
+- Keyboard shortcuts.
+- Text typing and clipboard-based input.
+- Scrolling and drag-and-drop.
+- OCR-based text identification with `find_text`.
+- Opening and interacting with native applications.
+- Browser and application navigation.
 
-<br />
+**Vision-gated execution:** The `desktop_control` tool is exposed only when the selected model is configured as vision-capable.
 
-<div align="center">
-  <img src="screenshots/05_skills_catalog.png" alt="NOVA Agent Skills catalog" width="82%" />
-  <br />
-  <sub>Use built-in skills or build your own workflows.</sub>
-</div>
+NOVA also supports native Windows text input for multilingual content, including Persian, Arabic, and other Unicode characters.
 
----
+Use it to automate workflows across browsers, editors, development environments, and other desktop applications.
 
-## 🦙 Run Local AI Without Per-Request API Costs
+> Computer Use requires a compatible vision-capable model. Actual automation reliability depends on the model, application, screen content, and execution environment.
 
-NOVA connects directly to local inference engines like [Ollama](https://ollama.com/) and [LM Studio](https://lmstudio.ai/). Download an open-weights model, run it on your hardware, and select it inside NOVA.
+### 3. Local AI — Run Your Own Models
+
+Use open-weight language models on your own hardware without paying a cloud API fee for every inference request.
+
+NOVA integrates with:
+
+- Ollama
+- LM Studio
+- Custom OpenAI-compatible local endpoints
+
+Choose your model, configure your local endpoint, and start using it inside NOVA.
 
 ```text
-Your Prompt
-    │
-    ▼
-┌───────────────────────────────┐
-│             NOVA              │
-│  Chat · Agent · Tools · Memory│
-└───────────────────────────────┘
-    │                       │
-    ▼                       ▼
-┌──────────────────┐  ┌──────────────────┐
-│      Ollama      │  │    LM Studio     │
-│  Local Endpoint  │  │  Local Endpoint  │
-└──────────────────┘  └──────────────────┘
-    │                       │
-    └───────────┬───────────┘
-                ▼
-       Your Local Hardware
-
+                  YOUR PROMPT
+                       |
+                       v
+              +------------------+
+              |       NOVA       |
+              |                  |
+              |  Chat            |
+              |  Agent           |
+              |  Tools           |
+              |  Memory          |
+              +------------------+
+                    /      \
+                   /        \
+                  v          v
+            +---------+  +----------+
+            | Ollama  |  | LM Studio|
+            +---------+  +----------+
+                  \          /
+                   \        /
+                    v      v
+              YOUR HARDWARE
 ```
 
-### Quick Setup with Ollama
+**No per-request cloud API charges for local inference.**
 
-1. Install [Ollama](https://ollama.com/).
-2. Pull a model suited to your hardware:
-```bash
-ollama pull llama3.2
+Your actual costs depend on your hardware, electricity consumption, and any external services you choose to use.
 
+### 4. Multiple Cloud AI Providers
+
+NOVA does not lock you into one model provider.
+
+Bring your own API key and choose the provider that fits your task.
+
+**Supported providers:**
+
+| Provider | Integration |
+|---|---|
+| OpenAI | Cloud API |
+| Anthropic Claude | Cloud API |
+| Google Gemini | Cloud API |
+| DeepSeek | Cloud API |
+| Groq | Cloud API |
+| Ollama | Local inference |
+| LM Studio | Local inference |
+| Custom APIs | OpenAI-compatible endpoints |
+
+Configure custom base URLs, API credentials, and compatible model endpoints.
+
+Use local models for routine tasks and cloud models when you need different capabilities.
+
+### 5. Terminal & Filesystem Automation
+
+NOVA connects language-model reasoning to real operating-system operations.
+
+**Windows:**
+- PowerShell
+- Command Prompt (CMD)
+
+**macOS and Linux:**
+- Bash
+- Zsh
+
+**Filesystem operations:**
+- Inspect project directories.
+- Read files using absolute paths.
+- Search for code and file references.
+- Create and edit files.
+- Move and copy files.
+- Compare project files.
+- Remove files when authorized.
+
+The active Workspace provides a default working context, not an artificial restriction against accessing other user-selected paths.
+
+NOVA distinguishes reading information from making changes. File modifications and system-changing operations remain subject to the configured approval policy.
+
+### 6. User-Controlled Execution Policies
+
+Autonomy should not mean losing control of your computer.
+
+NOVA provides configurable execution policies:
+
+| Policy | Behavior |
+|---|---|
+| `ask_always` | Requests explicit approval before every terminal command |
+| `allow_safe` | Automatically allows eligible read-only operations and requests approval for higher-risk operations |
+| `autonomous` | Allows a higher level of automation according to the configured policy |
+
+For maximum command-by-command control, use `ask_always`.
+
+Approvals apply to the specific action presented. They should not be treated as blanket permission for unrelated commands or additional operations.
+
+### 7. MCP — Connect Almost Any External Tool
+
+NOVA supports the Model Context Protocol (MCP), making it extensible beyond its built-in capabilities.
+
+Connect external tools through:
+
+**Local MCP servers (`stdio`):**
+- `npx`
+- `uvx`
+- `python`
+
+**Remote MCP servers:**
+- HTTP
+- SSE
+- Custom authentication headers
+
+Add and manage integrations through:
+
+`Settings → MCP Servers & External Tools → Add MCP Server`
+
+Connect compatible tools and extend what your agent can do without rebuilding the entire application.
+
+<div align="center">
+
+![NOVA MCP Manager](screenshots/04_mcp_servers.png)
+
+*Connect and manage external MCP integrations.*
+
+</div>
+
+### 8. Custom Agent Skills — Build Your Own Workflows
+
+Make NOVA fit your workflow.
+
+Skills are reusable Markdown-based instruction packages that define how the agent should approach specific tasks.
+
+Create a new skill:
+
+```text
+skills/
+└── myskill/
+    └── SKILL.md
 ```
 
-
-3. Ensure the Ollama server is running (`http://127.0.0.1:11434`).
-4. Open NOVA, select the **Ollama** preset, choose your model, and start working.
-
-### Quick Setup with LM Studio
-
-1. Install [LM Studio](https://lmstudio.ai/) and download a compatible GGUF model.
-2. Start the local OpenAI-compatible server inside LM Studio (`http://127.0.0.1:1234/v1`).
-3. In NOVA, select the **LM Studio** preset, save the connection, and pick your loaded model.
-
----
-
-## 🔗 Supported Model Providers
-
-* **Local Runtimes:** Ollama, LM Studio, and any custom OpenAI-compatible local server.
-* **Cloud Providers:** OpenAI, Anthropic Claude, Google Gemini, DeepSeek, and Groq (Bring Your Own API Key).
-
----
-
-## 💻 Terminal Automation & Approval Modes
-
-NOVA bridges AI reasoning with OS-level execution:
-
-* **Shell Execution:** PowerShell and CMD on Windows; `bash` and `zsh` on Linux/macOS.
-* **File System Operations:** Read and inspect files in the active Workspace or at other paths you explicitly specify. NOVA's Workspace is the default working context, not an artificial restriction that prevents you from asking NOVA to inspect another project or an absolute path. File creation, editing, moving, copying, and deletion are governed by NOVA's approval and safety rules.
-* **Process Management:** Inspect `stdout`, `stderr`, and exit codes in real time, or terminate hanging processes.
-
-### Execution Policies
-
-Control how NOVA is allowed to execute terminal commands:
-
-* **`ask_always`** — The strictest approval mode. NOVA asks for your explicit approval before every terminal command, including ordinary diagnostic and read-only commands such as `git status`, `dir`, or `python --version`. Approval applies only to the exact command being presented; a different command or changed arguments require a new approval.
-* **`allow_safe`** — Allows eligible read-only and low-risk inspection commands to run automatically. NOVA prompts for approval before operations classified as requiring confirmation, such as file modifications or system-changing commands.
-* **`autonomous`** — Enables a higher level of execution autonomy according to the configured policy. Use this only when you deliberately want to grant that level of access.
-
-**For command-by-command control, choose `ask_always`.** The active policy determines whether a command can run automatically or must wait for your approval. NOVA should not interpret a request to complete a task as blanket permission to execute unrelated commands or perform additional changes.
-
-### Workspace and file access
-
-The active Workspace gives NOVA a clear default context for project work. It is not intended to prevent you from working with files elsewhere on your computer.
-
-For example, you can ask NOVA to:
-
-* Inspect a project located on another drive.
-* Read a file by its absolute path.
-* Search a user-selected folder for a particular file or code reference.
-* Compare files from different project directories.
-
-A path being outside the active Workspace does not, by itself, make a read or inspection operation dangerous. NOVA distinguishes **access for inspection** from **permission to make changes**. Operations that create, edit, move, overwrite, or delete files—and commands that change system state—remain subject to the configured approval policy and safety checks.
-
-### User approval and system safety
-
-NOVA is designed to keep the user in control of actions performed on the computer:
-
-* The agent should explain what it intends to do and request approval before executing a command whenever the active policy requires it.
-* In `ask_always` mode, even routine commands require approval before execution.
-* Approval is specific to the presented action. It should not be treated as permission for a different command, a changed target, or additional steps.
-* Potentially destructive or system-disrupting operations should not be performed merely because they were suggested by a model, a file, a webpage, or an external tool.
-* If an action could seriously damage the operating system, compromise security, or cause substantial or irreversible data loss, NOVA should refuse to perform it and explain the risk rather than treating a routine confirmation as sufficient.
-
-The goal is not to restrict useful access to the user's own files. It is to let NOVA inspect and work with the locations the user chooses while keeping command execution and changes under the user's control.
-
----
-## 🖱️ Desktop GUI & Screen Automation (Computer Use)
-
-NOVA features an autonomous desktop control loop exclusively available for vision-capable models:
-
-* **Real-time Screen Inspection:** Captures high-resolution desktop screenshots and feeds them directly into the vision model loop.
-* **Mouse & Keyboard Control:** Precision mouse movement, single/double click, right-click, drag-and-drop, scroll, text typing, and multi-key keyboard shortcuts (e.g. Ctrl+C, Win+R, Alt+Tab).
-* **Vision-Gated Safety:** The desktop_control tool is only exposed when the active model supports vision (supports_vision = 1), preventing model confusion.
-* **Interactive Tasks:** Ask the agent to open apps, browse pages, click buttons, or perform graphical workflows directly on your machine.
-
----
-
-
-## 🔌 Model Context Protocol (MCP)
-
-Extend NOVA's capabilities by connecting external tools via MCP:
-
-* **Local Process (`stdio`):** Spawn local MCP servers using `npx`, `uvx`, or `python` with custom arguments and environment variables.
-* **Remote Server:** Connect to HTTP/SSE MCP endpoints with custom authentication headers.
-
-To add a server, navigate to **Settings → MCP Servers & External Tools → Add MCP Server**.
-
----
-
-## 🧩 Agent Skills
-
-Package complex instructions and tool rules into reusable skills located at `skills/<skill-name>/SKILL.md`.
-
-| Built-in Skill | Purpose |
-| --- | --- |
-| `/research` | Multi-step web research and synthesis. |
-| `/code` | Codebase architecture analysis, refactoring, and implementation. |
-| `/debug` | Root-cause analysis for stack traces and terminal errors. |
-| `/terminal` | Guided command-line execution and automation. |
-| `/web` | Focused live web queries via DuckDuckGo. |
-| `/rss` | Progressive RSS feed tree explorer & live news aggregator (~780 curated feeds). |
-
-### Creating a Custom Skill
-
-Create `skills/myskill/SKILL.md` with the following frontmatter:
+Example:
 
 ```markdown
 ---
 name: My Custom Skill
 command: /myskill
-description: Automates my specific recurring workflow
+description: Automates my recurring workflow
 icon: terminal
 color: emerald
 ---
 
-Define the step-by-step instructions, permitted tools, and safety constraints here.
+# Instructions
 
+Define your workflow here.
+
+Explain the task, required steps,
+available tools, and safety rules.
 ```
 
+Then invoke it using:
+
+```text
+/myskill
+```
+
+**Built-in skills include:**
+
+| Skill | Purpose |
+|---|---|
+| `/research` | Multi-step web research and synthesis |
+| `/code` | Codebase analysis, implementation, and refactoring |
+| `/debug` | Investigating errors and debugging issues |
+| `/terminal` | Guided command-line workflows |
+| `/web` | Focused web searches |
+| `/rss` | RSS feed exploration and news aggregation |
+
+Build reusable workflows that grow with your needs.
+
+<div align="center">
+
+![NOVA Skills Catalog](screenshots/05_skills_catalog.png)
+
+*Your workflows. Your rules. Your own AI skills.*
+
+</div>
+
+### 9. Web Research & Live Information
+
+NOVA includes DuckDuckGo-based web search integration for researching online information.
+
+Use it to:
+
+- Find current documentation.
+- Research technical issues.
+- Look up information across websites.
+- Support multi-step research tasks.
+- Retrieve information from RSS feeds.
+
+NOVA also provides `/rss`, a progressive RSS feed explorer with approximately 780 curated feeds.
+
+External information is retrieved only when the relevant web or RSS functionality is used.
+
+### 10. Desktop Workstation & System Monitoring
+
+NOVA is more than a chat window.
+
+Its workstation interface provides a unified environment for managing your AI setup and agent activity.
+
+Features include:
+
+- Provider configuration.
+- Conversation and agent workspaces.
+- Live execution logs.
+- MCP server management.
+- Skills catalog.
+- CPU, RAM, and network telemetry.
+- Workspace configuration.
+- Command approval policies.
+- Active agent process monitoring.
+
 ---
 
-## 🔒 Privacy & Security
+## Run Local AI Without Subscription Dependencies
 
-* **Local-First Storage:** Conversation history, workspace configuration, and application settings are stored locally in `data/nova.db` (SQLite).
-* **Credential Protection:** On Windows, provider API keys are encrypted at rest using Windows DPAPI tied to the current user security context.
-* **Local Model Privacy:** Prompts sent to a local model runtime, such as Ollama or LM Studio, are processed by that local runtime. Requests to cloud providers, web services, or remote MCP servers involve external network communication when those integrations are configured and used.
-* **User-Governed Actions:** NOVA provides configurable execution policies so you can decide when terminal commands require approval. For the strictest command-by-command confirmation, use `ask_always`.
+One of NOVA's central ideas is freedom of choice.
 
+You should be able to use your own hardware and your preferred models instead of depending entirely on a paid AI service.
+
+### Quick Start with Ollama
+
+1. Install [Ollama](https://ollama.com/).
+2. Download a model compatible with your hardware.
+
+```bash
+ollama pull llama3.2
+```
+
+3. Make sure the Ollama service is running.
+
+Default endpoint:
+
+```text
+http://127.0.0.1:11434
+```
+
+4. Open NOVA.
+5. Select the Ollama provider.
+6. Choose your installed model.
+
+### Quick Start with LM Studio
+
+1. Install [LM Studio](https://lmstudio.ai/).
+2. Download a compatible GGUF model.
+3. Load the model.
+4. Start the local OpenAI-compatible server.
+
+Default endpoint:
+
+```text
+http://127.0.0.1:1234/v1
+```
+
+5. Configure LM Studio in NOVA.
+6. Select the loaded model.
+
+**Your local inference requests are processed by your local model runtime.** Cloud providers, remote MCP servers, and online integrations communicate externally when configured and used.
 
 ---
 
-## ⚡ Get Started
+## Platform Support
 
-### Option 1: Install Directly on Windows (Recommended — Zero Setup)
+NOVA is designed for cross-platform use, with Windows as its primary desktop distribution target.
 
-You can install NOVA directly on **Windows 10 / 11 (64-bit)** without installing Python, Git, or Node.js:
+| Platform | Support | Distribution |
+|---|---|---|
+| Windows 10 / 11 x64 | Primary | Standalone desktop installer |
+| macOS | Core supported | Run from source |
+| Linux | Core supported | Run from source |
 
-| Package | Architecture | Size | SHA-256 | Download |
-|---|---|---|---|---|
-| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `353.70 MB` | `332a98079622b209279a5f3099e6d3796781aff72dc7ac0563f1f0849ecf5d25` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
+### Windows: A Real Desktop Application
 
-1. Download **`nova-windows-64-installer.exe`** from **[GitHub Releases](https://github.com/GoatSecurity/nova-ai/releases/latest)** and double-click to launch the setup wizard.
-2. Choose your installation directory (defaults to `%LOCALAPPDATA%\Programs\NOVA` — no Administrator rights required), select **Desktop Shortcut** / **Launch After Install**, and click **Install NOVA**.
-3. Open **NOVA** from your Desktop shortcut or Start Menu. NOVA launches inside a native desktop workstation powered by a background engine on a random free localhost port (no extra browser windows opened).
-4. **Clean Uninstall with Data Retention:** Uninstall anytime via **Windows Settings → Apps → Installed Apps (`NOVA`)** or `uninstall.exe`. The uninstaller prompts you to choose whether to delete or preserve your local database, chat history, custom skills, and configuration cache.
+Windows users get a dedicated installer and desktop workstation.
 
-*(A 32-bit Windows build will be added in a future release.)*
+No separate Python, Git, or Node.js installation is required for the packaged Windows release.
+
+The application includes:
+
+- Bundled Python runtime.
+- NOVA backend and frontend.
+- Native desktop shell.
+- Background local engine.
+- Random available localhost port.
+- Windows DPAPI credential encryption.
+- Dedicated graphical installer.
+- Graphical uninstaller with data-retention options.
 
 ---
 
-### Option 2: Run from Source (Windows, macOS & Linux)
+## Get Started
 
-#### Prerequisites
+### Option 1 — Windows Installer (Recommended)
 
-* **Python:** 3.11 or higher
-* **Git**
-* **Local AI Runtime (Optional):** [Ollama](https://ollama.com/) or [LM Studio](https://lmstudio.ai/)
+<badge>Windows 10 / 11 · 64-bit</badge>
 
-#### 1. Clone the Repository
+Download the latest release:
+
+[**Download NOVA for Windows x64**](https://github.com/GoatSecurity/nova-ai/releases/latest)
+
+Current release package:
+
+| File | Architecture | Size |
+|---|---|---|
+| `nova-windows-64-installer.exe` | x64 | 353.70 MB |
+
+SHA-256:
+
+```text
+332a98079622b209279a5f3099e6d3796781aff72dc7ac0563f1f0849ecf5d25
+```
+
+#### Installation
+
+1. Download the Windows installer.
+2. Double-click `nova-windows-64-installer.exe`.
+3. Choose the installation directory.
+4. Optionally enable the Desktop Shortcut.
+5. Optionally enable Launch After Install.
+6. Click Install NOVA.
+7. Launch NOVA from the Desktop or Start Menu.
+
+Default installation directory:
+
+```text
+%LOCALAPPDATA%\Programs\NOVA
+```
+
+No administrator privileges are required for the default user-mode installation.
+
+#### Uninstalling NOVA
+
+You can uninstall NOVA through:
+
+`Windows Settings → Apps → Installed Apps → NOVA`
+
+The graphical uninstaller lets you choose whether to preserve or remove your local database, chat history, skills, and configuration data.
+
+### Option 2 — Run from Source
+
+NOVA can also be launched directly from its source repository.
+
+#### Requirements
+
+- Python 3.11 or higher
+- Git
+- Ollama or LM Studio (optional)
+
+#### Clone the repository
 
 ```bash
 git clone https://github.com/GoatSecurity/nova-ai.git
 cd nova-ai
 ```
 
-#### 2. Run on Windows (One-Click Launcher)
+#### Windows
 
-Run the included batch or PowerShell launcher to start NOVA immediately:
+Run:
 
 ```powershell
 .\start.bat
 ```
 
-*(Or run `.\start.ps1` in PowerShell, or universal `python run.py`. To stop the server, press `Ctrl+C` or run `.\stop.bat`.)*
+Or:
 
-#### 3. Run on macOS & Linux (One-Command Launcher)
+```powershell
+.\start.ps1
+```
 
-Make the scripts executable once and launch NOVA (auto-creates `.venv`, installs dependencies, opens your browser):
+Alternatively:
+
+```bash
+python run.py
+```
+
+#### macOS & Linux
+
+Run:
 
 ```bash
 chmod +x start.sh stop.sh
 ./start.sh
 ```
 
-*(Or run universally on any OS with `pip install -r requirements.txt && python run.py`. To stop, press `Ctrl+C` or run `./stop.sh`.)*
+Or install dependencies manually:
 
-#### 4. Launch the Interface
+```bash
+pip install -r requirements.txt
+python run.py
+```
 
-Open your browser and navigate to:
+#### Open the workstation
+
+When running from source, open:
 
 ```text
 http://127.0.0.1:46815
 ```
 
+Use `Ctrl+C` or the corresponding stop script to stop the server.
+
 ---
 
-## ⌨️ Keyboard Shortcuts
+## Architecture
+
+NOVA is built around a lightweight Python/FastAPI backend and a modern web-based frontend hosted locally.
+
+Its architecture brings together multiple layers:
+
+```text
+                    USER
+                     |
+                     v
+              NOVA WORKSTATION
+                     |
+           +---------+---------+
+           |                   |
+           v                   v
+        AI AGENT            UI LAYER
+           |
+     +-----+-------------------------+
+     |             |                 |
+     v             v                 v
+   MODELS         TOOLS            MEMORY
+     |             |                 |
+  +--+--+       +--+---------+       |
+  |     |       |            |       |
+Local Cloud  Terminal     Computer  Local DB
+ AI   APIs  Filesystem      Use    SQLite
+               |
+               v
+          MCP SERVERS
+               |
+               v
+         CUSTOM SKILLS
+```
+
+### Main Components
+
+| Component | Responsibility |
+|---|---|
+| FastAPI Backend | API and application services |
+| Agent Engine | Model interaction and tool orchestration |
+| Provider Layer | Local and cloud model connections |
+| Tool System | Terminal, filesystem, web, and desktop tools |
+| MCP Layer | External integrations |
+| Skills System | Reusable agent workflows |
+| SQLite | Local conversations and application data |
+| Desktop Shell | Native workstation experience |
+
+---
+
+## Security & Privacy
+
+Your computer and your data should remain under your control.
+
+NOVA is built around local-first storage and configurable execution permissions.
+
+### Local Data Storage
+
+Conversations, application settings, and workspace configuration are stored locally in SQLite.
+
+Windows installer:
+
+```text
+%LOCALAPPDATA%\NOVA\data\nova.db
+```
+
+Source installation:
+
+```text
+data/nova.db
+```
+
+### API Key Protection
+
+On Windows, provider API credentials are encrypted at rest using Windows Data Protection API (DPAPI), tied to the current user security context.
+
+### Local AI Privacy
+
+When using Ollama or LM Studio, prompts are sent to your configured local inference runtime.
+
+Cloud AI providers, web search services, RSS feeds, and remote MCP servers require network communication when used.
+
+### Execution Approval
+
+Choose how much autonomy NOVA receives.
+
+Use `ask_always` when you want explicit approval for every terminal command.
+
+**Important:** Local-first does not mean that every operation is automatically private or safe. Review connected providers, MCP servers, skills, and execution policies before granting access to sensitive files or system operations.
+
+---
+
+## Keyboard Shortcuts
 
 | Shortcut | Action |
-| --- | --- |
+|---|---|
 | `Enter` | Send prompt |
 | `Shift + Enter` | Insert new line |
 | `/` | Open Agent Skills selector |
 | `Ctrl + K` | Search conversations and history |
 | `Esc` | Close active modal or menu |
-| `Right-Click` (on chat) | Rename, pin, export, or delete conversation |
+| Right-click on chat | Rename, pin, export, or delete conversation |
 
 ---
 
-## ❓ Frequently Asked Questions
+## Frequently Asked Questions
 
-**Do I need Python installed to use the Windows installer?**
-No. [`nova-windows-64-installer.exe`](https://github.com/GoatSecurity/nova-ai/releases/latest) bundles the entire Python runtime, NOVA backend/frontend, and desktop workstation shell.
+### What is NOVA?
 
-**Where are my conversations, models, and encrypted API keys stored?**
-When installed with the Windows desktop installer, user data is stored locally under `%LOCALAPPDATA%\NOVA\data\nova.db`. When running from source, it is stored in `data/nova.db` inside the project directory. On Windows, API keys are encrypted at rest via Windows DPAPI.
+NOVA is an open-source AI workstation and desktop agent that connects language models to real tools, files, terminal commands, web research, MCP integrations, and desktop automation.
 
-**Does NOVA send data to external servers automatically?**
-No. Prompts sent to local providers (Ollama, LM Studio, or local OpenAI-compatible servers) remain completely on your machine. External requests only happen when you explicitly configure a cloud API key, enable live Web Search / RSS tools, or connect a remote MCP server.
+### Is NOVA just another AI chatbot?
+
+No. NOVA combines conversational AI with agent workflows, terminal execution, filesystem operations, computer use, MCP integrations, and custom skills.
+
+### Is NOVA free?
+
+NOVA is released under the MIT License.
+
+Running local models through Ollama or LM Studio does not involve per-request cloud API charges. Cloud AI providers may charge separately for API usage.
+
+### Do I need an API key?
+
+No. You can configure local models through Ollama or LM Studio without a cloud provider API key.
+
+An API key is required for cloud providers that require authentication.
+
+### Can NOVA control Windows applications?
+
+Yes. Its Computer Use functionality supports screen inspection, mouse control, keyboard interaction, and text identification with compatible vision-capable models.
+
+### Can NOVA access files outside its Workspace?
+
+Yes. You can explicitly specify other folders and absolute paths. Operations that modify files remain governed by the configured approval and safety policies.
+
+### Does NOVA support MCP?
+
+Yes. NOVA supports local `stdio` MCP processes and remote MCP connections through HTTP/SSE.
+
+### Can I create my own agent skills?
+
+Yes. Create a folder containing a `SKILL.md` file and define your workflow, instructions, tools, and constraints.
+
+### Where are my conversations stored?
+
+In the local SQLite database:
+
+```text
+%LOCALAPPDATA%\NOVA\data\nova.db
+```
+
+for the packaged Windows application.
+
+### Does NOVA send my conversations to external servers?
+
+Local model requests go to your configured local runtime. External providers and integrations receive data when you configure and use them.
+
+### Is NOVA available on macOS and Linux?
+
+The Python/FastAPI core supports macOS and Linux. The dedicated standalone desktop installer is currently provided for Windows x64.
 
 ---
 
-## 🧑‍🚀 Contributing
+## Contributing
 
-Contributions, bug reports, and custom skills are welcome!
+NOVA is an open-source project, and contributions are welcome.
+
+You can help by:
+
+- Reporting bugs.
+- Improving documentation.
+- Building new tools.
+- Creating custom agent skills.
+- Developing integrations.
+- Improving desktop automation.
+- Contributing code and performance improvements.
+
+### Development Workflow
 
 1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/amazing-feature`).
-3. Commit your changes (`git commit -m 'Add amazing feature'`).
-4. Push to the branch (`git push origin feature/amazing-feature`) and open a Pull Request.
+2. Create a feature branch.
 
-Please ensure all logs or screenshots shared in Issues are stripped of personal API keys and sensitive paths.
+```bash
+git checkout -b feature/my-feature
+```
+
+3. Implement your changes.
+4. Commit your work.
+
+```bash
+git commit -m "Add my feature"
+```
+
+5. Push your branch and open a Pull Request.
+
+Please remove API keys, credentials, and sensitive local paths from logs and screenshots before sharing them.
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for full details.
+NOVA is licensed under the **MIT License**.
+
+See [LICENSE](LICENSE) for the full license text.
 
 ---
 
-## Make Your Machine Your AI Workspace.
+<div align="center">
 
-**NOVA — Your AI. Your Machine. Your Rules.**
+# Stop Just Talking to AI. Start Working With It.
 
-**[⬆ Back to the top](#nova)**
+**Your AI. Your Machine. Your Rules.**
+
+NOVA brings models, tools, and your computer together in one open-source AI workstation.
+
+[**Download NOVA**](https://github.com/GoatSecurity/nova-ai/releases/latest) · [**Explore the Source Code**](https://github.com/GoatSecurity/nova-ai) · [**Contribute on GitHub**](https://github.com/GoatSecurity/nova-ai/fork)
+
+**NOVA — Make Your Machine Your AI Workspace.**
+
+</div>
