@@ -1299,9 +1299,9 @@ class AgentOrchestrator:
 
                         cur_m = await db.execute(
 
-                            "SELECT supports_vision FROM provider_models WHERE (model_name = ? OR id = ?) AND provider_id = ? LIMIT 1;",
+                            "SELECT supports_vision FROM provider_models WHERE (model_name = ? OR id = ? OR display_name = ?) LIMIT 1;",
 
-                            (model_name, model_name, provider_id)
+                            (model_name, model_name, model_name)
 
                         )
 
@@ -1325,11 +1325,12 @@ class AgentOrchestrator:
 
 
 
-                if model_has_vision and "desktop_control" not in system_prompt:
+                if model_has_vision and "Desktop GUI & Screen Automation Instructions" not in system_prompt:
                     from backend.app.tools.system.desktop_automation import _get_screen_size
                     scr_w, scr_h = _get_screen_size()
                     system_prompt += (
                         f"\n\n### Desktop GUI & Screen Automation Instructions:\n"
+                    f"CRITICAL DIRECTIVE: You have DIRECT physical control of the user's mouse and keyboard via the `desktop_control` tool. NEVER tell the user you lack physical or graphical control of their browser or desktop, because you HAVE full control through `desktop_control`! Immediately invoke `desktop_control` whenever the user asks you to click, type, open browser, or interact with screen elements.\n"
                         f"You have access to the `desktop_control` tool to visually inspect and operate the user's desktop mouse and keyboard on Windows.\n"
                         f"- Current Screen Resolution: {scr_w}x{scr_h}. Coordinates you specify are automatically mapped to physical screen pixels.\n"
                         f"- Instant Screen OCR & UI Element Detection:\n"
