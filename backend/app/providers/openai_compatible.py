@@ -33,7 +33,7 @@ def detect_vision_support(model_name: str) -> bool:
         "minicpm-v", "bakllava", "internvl", "cogvlm", "glm-4v",
         "deepseek-vl", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
         "llama-3.2-11b-vision", "llama-3.2-90b-vision",
-        "claude-3", "gemini", "gpt-4-turbo"
+        "claude-3", "gemini", "gpt-4-turbo", "paligemma", "gemma-4", "gemma-3"
     ]
     return any(k in base_name for k in vision_keywords)
 

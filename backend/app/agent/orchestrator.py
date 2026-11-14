@@ -1310,11 +1310,15 @@ class AgentOrchestrator:
 
                     async with get_db() as db:
 
+                        clean_m = model_name.split(":")[-1] if model_name and ":" in model_name else (model_name or "")
+
+                        base_m = clean_m.replace("\\", "/").split("/")[-1] if clean_m else ""
+
                         cur_m = await db.execute(
 
-                            "SELECT supports_vision FROM provider_models WHERE (model_name = ? OR id = ? OR display_name = ?) LIMIT 1;",
+                            "SELECT supports_vision FROM provider_models WHERE (model_name = ? OR id = ? OR display_name = ? OR model_name = ? OR display_name = ? OR model_name LIKE ? OR display_name LIKE ?) LIMIT 1;",
 
-                            (model_name, model_name, model_name)
+                            (model_name, model_name, model_name, clean_m, base_m, f"%{base_m}%", f"%{base_m}%")
 
                         )
 

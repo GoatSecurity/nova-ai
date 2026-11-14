@@ -4,6 +4,7 @@ import sys
 import time
 import base64
 import ctypes
+import threading
 import webbrowser
 import subprocess
 from typing import Dict, Any, Optional, Tuple
@@ -481,9 +482,118 @@ def _mouse_scroll(clicks: int):
         u32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, int(clicks * 120), 0)
 
 
+def _init_win32_clipboard():
+    if sys.platform == "win32":
+        try:
+            u32 = ctypes.windll.user32
+            k32 = ctypes.windll.kernel32
+            u32.OpenClipboard.argtypes = [wintypes.HWND]
+            u32.OpenClipboard.restype = wintypes.BOOL
+            u32.EmptyClipboard.argtypes = []
+            u32.EmptyClipboard.restype = wintypes.BOOL
+            u32.CloseClipboard.argtypes = []
+            u32.CloseClipboard.restype = wintypes.BOOL
+            u32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+            u32.SetClipboardData.restype = wintypes.HANDLE
+            u32.GetClipboardData.argtypes = [wintypes.UINT]
+            u32.GetClipboardData.restype = wintypes.HANDLE
+
+            k32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+            k32.GlobalAlloc.restype = wintypes.HGLOBAL
+            k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+            k32.GlobalLock.restype = wintypes.LPVOID
+            k32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+            k32.GlobalUnlock.restype = wintypes.BOOL
+        except Exception:
+            pass
+
+_init_win32_clipboard()
+
+
+def _set_clipboard_text(text: str) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        for _ in range(8):
+            if u32.OpenClipboard(0):
+                break
+            time.sleep(0.02)
+        else:
+            return False
+
+        try:
+            u32.EmptyClipboard()
+            encoded = text.encode("utf-16le") + b"\x00\x00"
+            GMEM_MOVEABLE = 0x0002
+            CF_UNICODETEXT = 13
+            h_mem = k32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+            if not h_mem:
+                return False
+            ptr = k32.GlobalLock(h_mem)
+            if not ptr:
+                return False
+            ctypes.memmove(ptr, encoded, len(encoded))
+            k32.GlobalUnlock(h_mem)
+            return bool(u32.SetClipboardData(CF_UNICODETEXT, h_mem))
+        finally:
+            u32.CloseClipboard()
+    except Exception as e:
+        logger.debug(f"Failed to set clipboard text: {e}")
+        return False
+
+
+def _get_clipboard_text() -> str:
+    if sys.platform != "win32":
+        return ""
+    try:
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        CF_UNICODETEXT = 13
+        for _ in range(5):
+            if u32.OpenClipboard(0):
+                break
+            time.sleep(0.02)
+        else:
+            return ""
+        try:
+            h = u32.GetClipboardData(CF_UNICODETEXT)
+            if not h:
+                return ""
+            ptr = k32.GlobalLock(h)
+            if not ptr:
+                return ""
+            val = ctypes.wstring_at(ptr)
+            k32.GlobalUnlock(h)
+            return val
+        finally:
+            u32.CloseClipboard()
+    except Exception as e:
+        logger.debug(f"Failed to get clipboard text: {e}")
+        return ""
+
+
 def _keyboard_type(text: str):
     if sys.platform == "win32":
         u32 = ctypes.windll.user32
+        # On Windows, keybd_event truncates 16-bit scan codes to 8-bit BYTE (code & 0xFF),
+        # which garbles Unicode/Persian text (e.g. 0x0633 & 0xFF == 0x33 '3', turning Persian text into corrupt ASCII).
+        # Using CF_UNICODETEXT clipboard paste ensures 100% faithful Unicode typing and immunity to active keyboard layout.
+        has_unicode = any(ord(c) > 127 for c in text)
+        if has_unicode or len(text) > 3:
+            old_clip = _get_clipboard_text()
+            if _set_clipboard_text(text):
+                time.sleep(0.04)
+                _keyboard_press("ctrl+v")
+                time.sleep(0.08)
+                if old_clip:
+                    def _restore():
+                        time.sleep(0.6)
+                        _set_clipboard_text(old_clip)
+                    threading.Thread(target=_restore, daemon=True).start()
+                return
+
         for ch in text:
             code = ord(ch)
             u32.keybd_event(0, code, KEYEVENTF_UNICODE, 0)
@@ -620,13 +730,30 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
             if press_enter:
                 time.sleep(0.08)
                 _keyboard_press("enter")
+                time.sleep(1.2)
+                shot = _take_screenshot()
+                res = {
+                    "status": "success",
+                    "action": "type",
+                    "text": text,
+                    "clicked_at": [x, y] if (x is not None and y is not None) else None,
+                    "pressed_enter": True,
+                    "message": f"Typed '{text}' and pressed Enter. A fresh real-time screenshot is attached."
+                }
+                if shot.get("image_base64"):
+                    res["image_base64"] = shot["image_base64"]
+                    res["screen_width"] = shot.get("screen_width")
+                    res["screen_height"] = shot.get("screen_height")
+                    res["frame_width"] = shot.get("frame_width")
+                    res["frame_height"] = shot.get("frame_height")
+                return res
 
             return {
                 "status": "success",
                 "action": "type",
                 "text": text,
                 "clicked_at": [x, y] if (x is not None and y is not None) else None,
-                "pressed_enter": press_enter
+                "pressed_enter": False
             }
 
         elif action == "press_key":
