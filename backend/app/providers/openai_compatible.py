@@ -278,7 +278,7 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
 
         headers = self._get_headers()
 
-        for attempt in range(4):
+        for attempt in range(2):
             accumulated_tools: Dict[int, Dict[str, Any]] = {}
             received_any = False
             try:
@@ -366,10 +366,9 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
                     yield StreamChunk(tool_calls=parsed_tools, finish_reason="tool_calls")
                     break
 
-                if attempt < 3:
-                    backoff = 1.5 * (attempt + 1)
-                    logger.warning(f"Retrying chat_stream for {self.name} (attempt {attempt+1}/4) after {type(e).__name__}: {e}. Retrying in {backoff}s...")
-                    await asyncio.sleep(backoff)
+                if attempt < 1 and not received_any:
+                    logger.warning(f"Retrying chat_stream for {self.name} (attempt 1/2) after {type(e).__name__}: {e}. Retrying in 1.5s...")
+                    await asyncio.sleep(1.5)
                     continue
 
                 logger.error(f"Error in chat_stream ({self.name}): {e}")

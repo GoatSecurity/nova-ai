@@ -238,13 +238,14 @@ def _take_screenshot() -> Dict[str, Any]:
             "message": f"Could not capture desktop screen ({w}x{h}). Please ensure an interactive desktop session is active."
         }
 
-    # Store frame info and scale if needed (only downscale if screen is > 1920)
+    # Downscale to max 1024 dimension for lightning-fast tokenization and low prefill latency
+    MAX_DIM = 1024
     frame_w = im.width
     frame_h = im.height
-    if frame_w > 1920:
-        scale = 1920.0 / frame_w
-        frame_w = 1920
-        frame_h = int(im.height * scale)
+    if frame_w > MAX_DIM or frame_h > MAX_DIM:
+        scale = min(MAX_DIM / float(frame_w), MAX_DIM / float(frame_h))
+        frame_w = max(1, int(im.width * scale))
+        frame_h = max(1, int(im.height * scale))
         im = im.resize((frame_w, frame_h), Image.Resampling.LANCZOS)
 
     _last_frame_info = {
@@ -255,7 +256,7 @@ def _take_screenshot() -> Dict[str, Any]:
     }
 
     buf = io.BytesIO()
-    im.save(buf, format="PNG", optimize=True)
+    im.convert("RGB").save(buf, format="JPEG", quality=75, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
     return {
@@ -266,18 +267,34 @@ def _take_screenshot() -> Dict[str, Any]:
         "frame_width": frame_w,
         "frame_height": frame_h,
         "image_base64": b64,
-        "mime_type": "image/png",
+        "mime_type": "image/jpeg",
         "message": f"Captured desktop screen. Screen: {w}x{h}, Visual frame: {frame_w}x{frame_h}. Coordinates you specify will be automatically mapped to physical screen pixels."
     }
 
 
 def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_click: bool = False) -> Dict[str, Any]:
-    """Runs RapidOCR on current screen to find UI buttons, text elements, and exact coordinates."""
+    """Runs RapidOCR on current visual frame to find UI buttons, text elements, and exact coordinates."""
+    global _last_frame_info
     im = _capture_raw_screen_image()
     if im is None:
         return {"status": "error", "message": "Failed to capture desktop screen for OCR."}
 
     w, h = im.size
+    MAX_DIM = 1024
+    frame_w, frame_h = w, h
+    if frame_w > MAX_DIM or frame_h > MAX_DIM:
+        scale = min(MAX_DIM / float(frame_w), MAX_DIM / float(frame_h))
+        frame_w = max(1, int(w * scale))
+        frame_h = max(1, int(h * scale))
+        im = im.resize((frame_w, frame_h), Image.Resampling.LANCZOS)
+
+    _last_frame_info = {
+        "screen_w": w,
+        "screen_h": h,
+        "frame_w": frame_w,
+        "frame_h": frame_h
+    }
+
     ocr = _get_ocr_engine()
     if ocr is None:
         return {"status": "error", "message": "RapidOCR engine is not available."}
@@ -625,24 +642,40 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
             if not (target_url.startswith("http://") or target_url.startswith("https://")):
                 target_url = "https://" + target_url
             webbrowser.open(target_url)
-            time.sleep(1.2)
-            return {
+            time.sleep(1.8)
+            shot = _take_screenshot()
+            res = {
                 "status": "success",
                 "action": "open_url",
                 "url": target_url,
-                "message": f"Opened '{target_url}' in browser. Call action='screenshot' to observe the loaded page."
+                "message": f"Opened '{target_url}' in browser. A fresh real-time screenshot of the browser window is attached to this result. You can visually locate elements or use action='find_text' to click buttons/inputs."
             }
+            if shot.get("image_base64"):
+                res["image_base64"] = shot["image_base64"]
+                res["screen_width"] = shot.get("screen_width")
+                res["screen_height"] = shot.get("screen_height")
+                res["frame_width"] = shot.get("frame_width")
+                res["frame_height"] = shot.get("frame_height")
+            return res
 
         elif action == "open_app":
             app_name = text or arguments.get("name") or "browser"
             subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-            time.sleep(1.0)
-            return {
+            time.sleep(1.8)
+            shot = _take_screenshot()
+            res = {
                 "status": "success",
                 "action": "open_app",
                 "name": app_name,
-                "message": f"Launched application '{app_name}'. Call action='screenshot' to locate it on screen."
+                "message": f"Launched application '{app_name}'. A fresh screenshot of the desktop is attached. Use the visual frame or 'find_text' to interact with the application."
             }
+            if shot.get("image_base64"):
+                res["image_base64"] = shot["image_base64"]
+                res["screen_width"] = shot.get("screen_width")
+                res["screen_height"] = shot.get("screen_height")
+                res["frame_width"] = shot.get("frame_width")
+                res["frame_height"] = shot.get("frame_height")
+            return res
 
         elif action == "wait":
             time.sleep(float(wait_sec or 1.0))

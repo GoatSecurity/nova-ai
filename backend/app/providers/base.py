@@ -46,8 +46,8 @@ class BaseProviderAdapter(abc.ABC):
 
     def get_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         t = float(timeout or self.timeout_seconds)
-        # 60s connect to tolerate proxy SSL handshakes; deep 600s read for long model reasoning; 120s write for large payloads
-        to = httpx.Timeout(read=max(t, 600.0), connect=60.0, write=120.0, pool=120.0)
+        # 30s connect, max(t, 120s) read for deep model prefill/reasoning, 60s write
+        to = httpx.Timeout(read=max(t, 120.0), connect=30.0, write=60.0, pool=60.0)
         # Local services (Ollama, LM Studio) connect directly; remote services use environment proxy
         trust_env = not self.is_local_url()
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=300.0)

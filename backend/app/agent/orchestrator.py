@@ -1,3 +1,16 @@
+
+def _get_b64_mime(b64: str) -> str:
+    if not b64:
+        return "image/jpeg"
+    if b64.startswith("/9j/"):
+        return "image/jpeg"
+    if b64.startswith("iVBOR"):
+        return "image/png"
+    if b64.startswith("R0lGOD"):
+        return "image/gif"
+    if b64.startswith("UklGR"):
+        return "image/webp"
+    return "image/jpeg"
 import json
 
 import uuid
@@ -1215,7 +1228,7 @@ class AgentOrchestrator:
 
                                 in_turn_messages.append({"role": "assistant", "content": f"[Called tools: {tc_name}]"})
 
-                                in_turn_messages.append({"role": "system", "content": f"[TOOL EXECUTION FEEDBACK]\nTool '{tc_name}' Result:\n{fb_body}"})
+                                in_turn_messages.append({"role": "user", "content": f"[TOOL EXECUTION FEEDBACK]\nTool '{tc_name}' Result:\n{fb_body}"})
 
                 except Exception as ex_app:
 
@@ -1340,12 +1353,13 @@ class AgentOrchestrator:
                         f"  * Call `desktop_control(action='screenshot')` to capture and view the desktop screen at any point.\n"
                         f"  * Always examine the visual screenshot or OCR results to find exact visual element coordinates before clicking.\n"
                         f"- Interacting with Applications & Web Browsers:\n"
-                        f"  * To search Google or open a website: Call `desktop_control(action='open_url', text='https://www.google.com')`. This opens the user's browser directly to that site! Then call `action='screenshot'` to view the page.\n"
-                        f"  * To click and type into any field (search box, form, address bar): Use `desktop_control(action='type', x=..., y=..., text='...', press_enter=True)`. It will automatically click at (x, y) to focus the box, type the text, and press Enter.\n"
+                        f"  * To open any website: Call `desktop_control(action='open_url', text='https://www.google.com')`. This automatically opens the browser AND attaches a fresh screenshot of the loaded page!\n"
+                        f"  * To search Google directly: Call `desktop_control(action='open_url', text='https://www.google.com/search?q=YOUR_QUERY')`, or open Google and call `desktop_control(action='type', text='...', press_enter=True)`.\n"
+                        f"  * Always set `press_enter=True` when typing into search boxes, address bars, or terminals.\n"
+                        f"  * To click any button, menu, or text label (in Photoshop, browser, etc.), call `desktop_control(action='find_text', text='...', click=True)` for instant 1-step targeting!\n"
                         f"  * To launch an app by name: Call `desktop_control(action='open_app', text='chrome')` (or 'msedge', 'notepad', 'calc', etc.), or call `action='press_key', key='win+r'` and type the app name.\n"
                         f"  * Taskbar is at the bottom of the screen (y ~ {scr_h - 25}). You can click icons on the taskbar to open or switch apps.\n"
                         f"  * Common hotkeys: 'enter', 'tab', 'win+r', 'alt+d' (focus address bar), 'ctrl+t' (new tab), 'ctrl+w' (close tab), 'ctrl+l' (address bar).\n"
-                        f"  * After performing an action, call `action='screenshot'` to confirm the result.\n"
                     )
 
                 # Retrieve conversation messages (excluding placeholder) and unpack attachments for LLM
@@ -1393,7 +1407,8 @@ class AgentOrchestrator:
                                 from backend.app.tools.system.desktop_automation import _take_screenshot
                                 auto_shot = _take_screenshot()
                                 if auto_shot.get("image_base64"):
-                                    image_parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{auto_shot['image_base64']}"}})
+                                    mime_t = _get_b64_mime(auto_shot['image_base64'])
+                                    image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime_t};base64,{auto_shot['image_base64']}"}})
                                     text_file_sections.append(
                                         f"[LIVE DESKTOP SCREENSHOT - {auto_shot.get('screen_width')}x{auto_shot.get('screen_height')}]: "
                                         "A real-time screenshot of the user's active desktop has been captured and attached to this message. "
@@ -1404,35 +1419,7 @@ class AgentOrchestrator:
 
 
 
-                    for match in att_matches:
 
-                        attr_str = match.group(1)
-
-                        att_body = match.group(2).strip()
-
-                        type_match = re.search(r'type="([^"]+)"', attr_str, re.IGNORECASE)
-
-                        name_match = re.search(r'name="([^"]+)"', attr_str, re.IGNORECASE)
-
-                        att_type = type_match.group(1).lower() if type_match else "text"
-
-                        att_name = name_match.group(1) if name_match else "file.txt"
-
-                        ext = att_name.split(".")[-1] if "." in att_name else "text"
-
-
-
-                        if att_type == "image":
-
-                            # Always send attached images as multimodal image_url parts
-
-                            image_parts.append({"type": "image_url", "image_url": {"url": att_body}})
-
-                        elif att_type in ("paste", "text"):
-
-                            header_title = "Pasted Text Snippet" if att_type == "paste" else f"Attached File: {att_name}"
-
-                            text_file_sections.append(f"[{header_title}]\n```{ext}\n{att_body}\n```")
 
 
 
@@ -2286,7 +2273,7 @@ class AgentOrchestrator:
 
                     feedback_prompt = "\n\n".join(tool_results_feedback)
 
-                    in_turn_messages.append({"role": "system", "content": f"[TOOL EXECUTION FEEDBACK]\n{feedback_prompt}"})
+                    in_turn_messages.append({"role": "user", "content": f"[TOOL EXECUTION FEEDBACK]\n{feedback_prompt}"})
 
 
 
@@ -2300,7 +2287,7 @@ class AgentOrchestrator:
 
                             {"type": "text", "text": "[DESKTOP SCREENSHOT] Current screen visual frame:"},
 
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{executed_screenshot_b64}"}}
+                            {"type": "image_url", "image_url": {"url": f"data:{_get_b64_mime(executed_screenshot_b64)};base64,{executed_screenshot_b64}"}}
 
                         ]
 
@@ -2316,7 +2303,7 @@ class AgentOrchestrator:
 
                     in_turn_messages.append({
 
-                        "role": "system",
+                        "role": "user",
 
                         "content": "[SYSTEM DIRECTIVE] Final response step reached. Synthesize all retrieved results into a clear, comprehensive final answer in the user's language now."
 
@@ -2356,7 +2343,7 @@ class AgentOrchestrator:
 
                     synthesis_messages = formatted_messages + in_turn_messages + [{
 
-                        "role": "system",
+                        "role": "user",
 
                         "content": "[SYSTEM DIRECTIVE] Summarize all tool results above and deliver a complete, well-structured final answer in the user's language now."
 

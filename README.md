@@ -320,7 +320,7 @@ You can install NOVA directly on **Windows 10 / 11 (64-bit)** without installing
 
 | Package | Architecture | Size | SHA-256 | Download |
 |---|---|---|---|---|
-| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `350.88 MB` | `3625adcddcb225f2783a5b55d6676c5d98411c9fae37a75904fa4270bdb3ffb7` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
+| `nova-windows-64-installer.exe` | Windows 64-bit (`x64`) | `350.88 MB` | `173254400bc1cb1deed8d0eef60d4cb49c19df75d1058290a16a2f4cbf246290` | **[Download Latest Release](https://github.com/GoatSecurity/nova-ai/releases/download/v1.0.0/nova-windows-64-installer.exe)** |
 
 1. Download **`nova-windows-64-installer.exe`** from **[GitHub Releases](https://github.com/GoatSecurity/nova-ai/releases/latest)** and double-click to launch the setup wizard.
 2. Choose your installation directory (defaults to `%LOCALAPPDATA%\Programs\NOVA` — no Administrator rights required), select **Desktop Shortcut** / **Launch After Install**, and click **Install NOVA**.

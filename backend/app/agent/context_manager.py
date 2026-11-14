@@ -106,6 +106,25 @@ class ContextManager:
                 # Middle system message -> user role
                 m["role"] = "user"
 
+        # Multi-turn Vision Optimization: Keep only the most recent desktop screenshot in context.
+        # Older screenshots are replaced with a lightweight text token so prompt prefill stays
+        # under 2-3 seconds instead of timing out on self-hosted or remote model servers.
+        latest_screenshot_kept = False
+        for m in reversed(pruned):
+            content = m.get("content")
+            if isinstance(content, list):
+                new_parts = []
+                for part in reversed(content):
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        if not latest_screenshot_kept:
+                            latest_screenshot_kept = True
+                            new_parts.insert(0, part)
+                        else:
+                            new_parts.insert(0, {"type": "text", "text": "[Previous desktop frame cleared]"})
+                    else:
+                        new_parts.insert(0, part)
+                m["content"] = new_parts
+
         # Universal Provider Compatibility (Gemini / Anthropic / OpenAI rule):
         # The conversation request must not end with an assistant message.
         if pruned and pruned[-1].get("role") == "assistant":
