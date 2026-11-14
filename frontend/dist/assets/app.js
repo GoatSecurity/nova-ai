@@ -108,7 +108,7 @@
 
 
 
-    rightPanelOpen: true,
+    rightPanelOpen: false,
 
 
 
@@ -2906,7 +2906,9 @@ function getActiveModel() {
 
       state.isStreaming = false;
 
+      state.isAgentRunning = false;
 
+      state.turnStartTime = null;
 
       state.streamingContent = '';
 
@@ -4050,7 +4052,7 @@ function getActiveModel() {
 
     state.isStreaming = true;
 
-
+    state.turnStartTime = Date.now();
 
     state.streamingContent = '';
 
@@ -4922,70 +4924,6 @@ function getActiveModel() {
 
 
 
-          <!-- Projects Group -->
-
-
-
-          <div>
-
-
-
-            <div class="px-2 py-1 text-[11px] font-medium text-zinc-500 flex items-center justify-between">
-
-
-
-              <span>Projects</span>
-
-
-
-              <div class="flex items-center gap-1">
-
-
-
-                <button class="p-0.5 hover:text-zinc-300 text-zinc-500" title="Workspace" onclick="window.openSettingsTab('workspace')">
-
-
-
-                  ${icons.folder}
-
-
-
-                </button>
-
-
-
-              </div>
-
-
-
-            </div>
-
-
-
-            <div class="mt-0.5 px-2 py-1.5 text-xs text-zinc-400 flex items-center gap-2 rounded-lg hover:bg-white/5 cursor-pointer" onclick="window.openSettingsTab('workspace')">
-
-
-
-              <span class="text-zinc-500">📁</span>
-
-
-
-              <span class="truncate font-medium">${state.activeWorkspace ? state.activeWorkspace.name : 'NOVA Workspace'}</span>
-
-
-
-            </div>
-
-
-
-          </div>
-
-
-
-
-
-
-
           <!-- Conversations Group -->
 
 
@@ -5466,7 +5404,11 @@ function getActiveModel() {
 
         }
 
-        const totalSec = Math.max(1, Math.round(Math.max(totalMs, wallMs) / 1000));
+        let liveElapsedSec = 0;
+        if ((state.isStreaming || state.isAgentRunning) && state.turnStartTime) {
+          liveElapsedSec = Math.max(1, Math.round((Date.now() - state.turnStartTime) / 1000));
+        }
+        const totalSec = Math.max(1, Math.max(liveElapsedSec, Math.round(Math.max(totalMs, wallMs) / 1000)));
 
         const durationText = totalSec >= 60 ? `${Math.round(totalSec / 60)}m` : `${totalSec}s`;
 
@@ -7756,29 +7698,7 @@ function getActiveModel() {
 
           </button>
 
-          <button
-
-            class="flex-1 py-2.5 text-center border-b-2 ${state.rightPanelTab === 'workspace' ? 'border-emerald-400 text-emerald-400 bg-[#161924]' : 'border-transparent text-slate-400 hover:text-slate-200'} cursor-pointer"
-
-            onclick="window.switchTab('workspace')"
-
-          >
-
-            ${t('tab_files')}
-
-          </button>
-
-          <button
-
-            class="flex-1 py-2.5 text-center border-b-2 ${state.rightPanelTab === 'health' ? 'border-emerald-400 text-emerald-400 bg-[#161924]' : 'border-transparent text-slate-400 hover:text-slate-200'} cursor-pointer"
-
-            onclick="window.switchTab('health')"
-
-          >
-
-            ${t('tab_health')}
-
-          </button>
+          
 
           <button
 

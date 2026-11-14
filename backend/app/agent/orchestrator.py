@@ -784,6 +784,8 @@ class AgentOrchestrator:
 
     ) -> Dict[str, Any]:
 
+        turn_wall_start = time.perf_counter()
+
         cls._cancelled_convs.discard(conversation_id)
 
         cls._active_turns.add(conversation_id)
@@ -2103,6 +2105,12 @@ class AgentOrchestrator:
 
                         heartbeat_task.cancel()
 
+                    real_duration_ms = max(50, int((time.perf_counter() - tool_start_time) * 1000))
+
+                    if isinstance(tool_output, dict):
+
+                        tool_output["duration_ms"] = real_duration_ms
+
 
 
                     if tool_output.get("status") == "waiting_approval":
@@ -2207,7 +2215,7 @@ class AgentOrchestrator:
 
                         exit_code=exit_code,
 
-                        duration_ms=tool_output.get("duration_ms", 0),
+                        duration_ms=tool_output.get("duration_ms", real_duration_ms),
 
                         is_error=is_err,
 
@@ -2229,7 +2237,9 @@ class AgentOrchestrator:
 
                             "tool_name": tc_name,
 
-                            "result": tool_output
+                            "result": tool_output,
+
+                            "duration_ms": real_duration_ms
 
                         }
 
@@ -2425,6 +2435,8 @@ class AgentOrchestrator:
 
             if not final_assistant_content or not final_assistant_content.strip():
 
+                is_persian_req = bool(user_prompt and any('\u0600' <= ch <= '\u06FF' for ch in user_prompt))
+
                 if cumulative_assistant_text.strip():
 
                     final_assistant_content = cumulative_assistant_text.strip()
@@ -2433,11 +2445,21 @@ class AgentOrchestrator:
 
                     summary_bullets = "\n".join(f"- {s}" for s in executed_tool_summaries)
 
-                    final_assistant_content = f"I have executed the following actions:\n\n{summary_bullets}\n\nTask completed successfully."
+                    if is_persian_req:
+
+                        final_assistant_content = f"\u0639\u0645\u0644\u06cc\u0627\u062a \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u0627\u0646\u062c\u0627\u0645 \u0634\u062f:\n\n{summary_bullets}\n\n\u062f\u0633\u062a\u0648\u0631 \u062e\u0648\u0627\u0633\u062a\u0647\u200c\u0634\u062f\u0647 \u0628\u0627 \u0645\u0648\u0633 \u0648 \u06a9\u06cc\u0628\u0648\u0631\u062f \u062f\u0631 \u0633\u06cc\u0633\u062a\u0645 \u0628\u0647 \u067e\u0627\u06cc\u0627\u0646 \u0631\u0633\u06cc\u062f."
+
+                    else:
+
+                        final_assistant_content = f"I have executed the requested actions:\n\n{summary_bullets}\n\nTask completed successfully."
 
                 else:
 
-                    final_assistant_content = "Task completed successfully."
+                    final_assistant_content = "\u0639\u0645\u0644\u06cc\u0627\u062a \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u0627\u0646\u062c\u0627\u0645 \u0634\u062f." if is_persian_req else "Task completed successfully."
+
+
+
+            total_turn_seconds = max(0.5, round(time.perf_counter() - turn_wall_start, 1))
 
 
 
@@ -2461,7 +2483,15 @@ class AgentOrchestrator:
 
                 conversation_id=conversation_id,
 
-                data={"message_id": asst_msg_id, "content": final_assistant_content}
+                data={
+
+                    "message_id": asst_msg_id,
+
+                    "content": final_assistant_content,
+
+                    "duration_seconds": total_turn_seconds
+
+                }
 
             ))
 
