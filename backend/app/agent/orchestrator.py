@@ -620,6 +620,72 @@ def _format_tool_feedback(tc_name: str, tool_output: Dict[str, Any]) -> str:
 
 
 
+def _is_pure_chitchat(text: str) -> bool:
+    """Checks if a user input is a pure conversational greeting or pleasantry without tool/action requests."""
+    if not text or len(text.strip()) > 75:
+        return False
+    clean = text.strip().lower()
+    pattern = (
+        r"^(\u0633\u0644\u0627\u0645|\u0633\u0644\u0627\u0645\u0645|\u062f\u0631\u0648\u062f|\u062e\u0648\u0628\u06cc|"
+        r"\u0686\u0637\u0648\u0631\u06cc|\u0633\u0644\u0627\u0645\s+\u0686\u0637\u0648\u0631\u06cc|\u0633\u0644\u0627\u0645\s+\u062e\u0648\u0628\u06cc|"
+        r"\u0635\u0628\u062d\s+\u0628\u062e\u06cc\u0631|\u0639\u0635\u0631\s+\u0628\u062e\u06cc\u0631|\u0634\u0628\s+\u0628\u062e\u06cc\u0631|"
+        r"\u0631\u0648\u0632\s+\u0628\u062e\u06cc\u0631|\u0645\u0645\u0646\u0648\u0646|\u062a\u0634\u06a9\u0631|\u0645\u0631\u0633\u06cc|"
+        r"\u062e\u0633\u062a\u0647\s+\u0646\u0628\u0627\u0634\u06cc\u062f|"
+        r"hi|hello|hey|hey there|howdy|good morning|good afternoon|good evening|how are you|who are you|what is your name|thanks|thank you)"
+        r"[\s!.,?\u061f]*$"
+    )
+    return bool(re.match(pattern, clean, re.IGNORECASE))
+
+
+def _summarize_action_for_user(tc_name: str, args: Dict[str, Any]) -> str:
+    """Returns a concise, human-readable action label for live reporting in the UI."""
+    if tc_name == "web_search":
+        q = args.get("query") or args.get("text") or ""
+        return f"Searching Google for '{q}'..." if q else "Searching web..."
+    elif tc_name == "desktop_control":
+        act = args.get("action", "")
+        txt = args.get("text", "")
+        tgt = args.get("target", "")
+        if act == "search":
+            return f"Searching in browser for '{txt}'..."
+        elif act == "open_url":
+            return f"Navigating browser to '{txt}'..."
+        elif act == "open_app":
+            return f"Launching application '{txt}'..."
+        elif act == "focus_window":
+            return f"Switching to window '{txt}'..."
+        elif act == "type":
+            return f"Typing '{txt[:30]}'..." if txt else "Typing into focused element..."
+        elif act == "click":
+            return f"Clicking '{tgt or txt or 'element'}'..."
+        elif act == "batch":
+            steps = args.get("steps") or []
+            return f"Executing desktop automation macro ({len(steps)} steps)..."
+        elif act == "screenshot":
+            return "Inspecting desktop screen view..."
+        elif act in ("find_text", "ocr"):
+            return f"Scanning screen text for '{txt}'..." if txt else "Scanning screen with OCR..."
+        return f"Desktop automation: {act}..."
+    elif tc_name in ("run_command", "execute_command", "execute_powershell", "execute_cmd"):
+        cmd = args.get("CommandLine") or args.get("command") or ""
+        return f"Running command: {cmd[:45]}..." if cmd else "Executing system command..."
+    elif tc_name == "read_file":
+        p = (args.get("path") or "file").replace(chr(92), "/")
+        fname = p.split("/")[-1]
+        return f"Reading file: {fname}..."
+    elif tc_name in ("write_file", "create_file", "edit_file"):
+        p = (args.get("path") or "file").replace(chr(92), "/")
+        fname = p.split("/")[-1]
+        return f"Editing file: {fname}..."
+    elif tc_name == "list_directory":
+        p = (args.get("path") or ".").replace(chr(92), "/")
+        dname = p.split("/")[-1] or p
+        return f"Listing directory: {dname}..."
+    elif tc_name.startswith("fetch_rss"):
+        return "Fetching live RSS feeds..."
+    return f"Running {tc_name}..."
+
+
 class AgentOrchestrator:
 
     """
@@ -1016,7 +1082,7 @@ class AgentOrchestrator:
 
                 skill_command=skill_cmd,
 
-                include_session_title=should_generate_title,
+                include_session_title=False,
 
                 enable_thinking=enable_thinking
 
@@ -1537,20 +1603,29 @@ class AgentOrchestrator:
 
                 # Prepare tool definitions (disabled if breaking a repetitive loop)
 
-                available_tools = None if force_text_next else tool_registry.get_openai_tools()
-
-                if available_tools:
-
-                    if enable_search is False:
-
-                        available_tools = [t for t in available_tools if t.get("function", {}).get("name") != "web_search"]
-
-                    # Desktop GUI automation tool is strictly available for vision-capable models only
-
-                    if not model_has_vision:
-
-                        available_tools = [t for t in available_tools if t.get("function", {}).get("name") != "desktop_control"]
-
+                # Speed Optimization: Pure greetings / chitchat bypass 5,000 tokens of tool schemas entirely
+                is_pure_greeting = _is_pure_chitchat(clean_user_prompt) if ('clean_user_prompt' in locals() and clean_user_prompt) else False
+                if is_pure_greeting and iteration == 0 and not force_text_next:
+                    available_tools = None
+                else:
+                    available_tools = None if force_text_next else tool_registry.get_openai_tools()
+                    if available_tools:
+                        if enable_search is False:
+                            available_tools = [t for t in available_tools if t.get("function", {}).get("name") != "web_search"]
+                        # Desktop GUI automation tool is strictly available for vision-capable models only
+                        if not model_has_vision:
+                            available_tools = [t for t in available_tools if t.get("function", {}).get("name") != "desktop_control"]
+                        # Prune RSS tools if the prompt does not mention news/RSS/feeds
+                        needs_rss = bool(
+                            skill_cmd == "/rss" or
+                            ('clean_user_prompt' in locals() and clean_user_prompt and re.search(r"(rss|feed|news|\u062e\u0628\u0631|\u0627\u062e\u0628\u0627\u0631|\u0641\u06cc\u062f)", clean_user_prompt, re.IGNORECASE))
+                        )
+                        if not needs_rss:
+                            available_tools = [t for t in available_tools if not t.get("function", {}).get("name", "").startswith(("list_rss", "get_rss", "fetch_rss"))]
+                        # Prune duplicate shell tools if unified execute_command is available
+                        has_unified_cmd = any(t.get("function", {}).get("name") == "execute_command" for t in available_tools)
+                        if has_unified_cmd:
+                            available_tools = [t for t in available_tools if t.get("function", {}).get("name") not in ("execute_powershell", "execute_cmd")]
                 force_text_next = False
 
 
@@ -1943,13 +2018,23 @@ class AgentOrchestrator:
 
 
 
+                    turn_duration_ms = int((time.perf_counter() - turn_wall_start) * 1000)
+
                     await event_bus.publish(AgentEvent(
 
                         event_type="done",
 
                         conversation_id=conversation_id,
 
-                        data={"message_id": asst_msg_id, "content": final_assistant_content}
+                        data={
+
+                            "message_id": asst_msg_id,
+
+                            "content": final_assistant_content,
+
+                            "duration_ms": turn_duration_ms
+
+                        }
 
                     ))
 
@@ -2037,6 +2122,18 @@ class AgentOrchestrator:
 
 
 
+                    action_desc = _summarize_action_for_user(tc_name, args_dict)
+
+                    await event_bus.publish(AgentEvent(
+
+                        event_type="status",
+
+                        conversation_id=conversation_id,
+
+                        data={"status": "working", "action": tc_name, "description": action_desc}
+
+                    ))
+
                     await event_bus.publish(AgentEvent(
 
                         event_type="tool_call_start",
@@ -2050,6 +2147,8 @@ class AgentOrchestrator:
                             "tool_name": tc_name,
 
                             "arguments": args_dict,
+
+                            "description": action_desc,
 
                             "risk_level": risk_level
 
@@ -2254,6 +2353,16 @@ class AgentOrchestrator:
                             "duration_ms": real_duration_ms
 
                         }
+
+                    ))
+
+                    await event_bus.publish(AgentEvent(
+
+                        event_type="status",
+
+                        conversation_id=conversation_id,
+
+                        data={"status": "working", "description": "Analyzing results & responding..."}
 
                     ))
 

@@ -76,7 +76,8 @@ class PromptEngine:
         preferred_tools: Optional[List[str]] = None,
         skill_command: Optional[str] = None,
         include_session_title: bool = False,
-        enable_thinking: Optional[bool] = None
+        enable_thinking: Optional[bool] = None,
+        include_rss: bool = False
     ) -> str:
         import platform
         import sys
@@ -154,26 +155,27 @@ class PromptEngine:
             )
 
         # 5b. Curated RSS Feed Tree Directory (/rss skill & autonomous research)
-        try:
-            from backend.app.tools.utility.rss_tools import load_rss_catalog
-            rss_cat = load_rss_catalog()
-            country_names = ", ".join(rss_cat.get("countries", {}).keys())
-            category_names = ", ".join(rss_cat.get("categories", {}).keys())
-            if country_names or category_names:
-                sections.append(
-                    "[CURATED RSS FEEDS DIRECTORY (/rss SKILL & AUTONOMOUS RESEARCH)]\n"
-                    "You have a built-in curated RSS directory (~780 feeds). Navigate it progressively like a tree:\n"
-                    f"- Available Countries: {country_names}\n"
-                    f"- Available Categories: {category_names}\n"
-                    "Mandatory RSS & News Research Workflow:\n"
-                    "1) Inspect the target branch with `get_rss_category_feeds(category='<name>', filter='<optional_subtopic>')` (e.g. `category='News', filter='world'` shows BBC News - World, NYT World, Guardian World, CNBC International, NDTV World, Google News) or `list_rss_categories`.\n"
-                    "2) CRITICAL: If the user requested actual news, headlines, updates, or articles, NEVER stop after listing feed links. Immediately call `fetch_rss_feed(category='<name>', feed_filter='<subtopic>', max_items=20)` or `fetch_rss_feed(url='<feed_url>')` to download live articles.\n"
-                    "3) Synthesize the fetched headlines, dates, summaries, and direct article links cleanly in the user's exact language.\n"
-                    "4) If an individual news publisher returns HTTP 403/timeout/paywall in `fetch_web_page`, NEVER run PowerShell, shell, or Python scripts to scrape that website — rely on the live RSS summaries, other RSS feeds, or `web_search`."
-                )
-        except Exception:
-            pass
-
+        if skill_command == "/rss" or include_rss:
+            try:
+                from backend.app.tools.utility.rss_tools import load_rss_catalog
+                rss_cat = load_rss_catalog()
+                country_names = ", ".join(rss_cat.get("countries", {}).keys())
+                category_names = ", ".join(rss_cat.get("categories", {}).keys())
+                if country_names or category_names:
+                    sections.append(
+                        "[CURATED RSS FEEDS DIRECTORY (/rss SKILL & AUTONOMOUS RESEARCH)]\n"
+                        "You have a built-in curated RSS directory (~780 feeds). Navigate it progressively like a tree:\n"
+                        f"- Available Countries: {country_names}\n"
+                        f"- Available Categories: {category_names}\n"
+                        "Mandatory RSS & News Research Workflow:\n"
+                        "1) Inspect the target branch with `get_rss_category_feeds(category='<name>', filter='<optional_subtopic>')` (e.g. `category='News', filter='world'` shows BBC News - World, NYT World, Guardian World, CNBC International, NDTV World, Google News) or `list_rss_categories`.\n"
+                        "2) CRITICAL: If the user requested actual news, headlines, updates, or articles, NEVER stop after listing feed links. Immediately call `fetch_rss_feed(category='<name>', feed_filter='<subtopic>', max_items=20)` or `fetch_rss_feed(url='<feed_url>')` to download live articles.\n"
+                        "3) Synthesize the fetched headlines, dates, summaries, and direct article links cleanly in the user's exact language.\n"
+                        "4) If an individual news publisher returns HTTP 403/timeout/paywall in `fetch_web_page`, NEVER run PowerShell, shell, or Python scripts to scrape that website — rely on the live RSS summaries, other RSS feeds, or `web_search`."
+                    )
+            except Exception:
+                pass
+    
         # 6. Tool fallback instructions if requested
         if include_tool_fallback:
             all_tools = tool_registry.list_tools()

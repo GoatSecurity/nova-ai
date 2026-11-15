@@ -432,12 +432,12 @@ Current release package:
 
 | File | Architecture | Size |
 |---|---|---|
-| `nova-windows-64-installer.exe` | x64 | 353.71 MB |
+| `nova-windows-64-installer.exe` | x64 | 353.72 MB |
 
 SHA-256:
 
 ```text
-3cb73e877a06ab6ce62b28fbe0345e3301b6cd9aeb61eabd895014c52cda82de
+840f190c4f8f66191d0f171a29a1497c15e4e080d039a5f255905b645dbac08b
 ```
 
 #### Installation

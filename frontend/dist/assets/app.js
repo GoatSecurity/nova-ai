@@ -221,6 +221,10 @@
     activeSubModal: null,
 
     lang: 'en',
+    liveStatusText: '',
+    turnStartTime: null,
+    thoughtStartTime: null,
+    thoughtDurationSec: null,
 
 
 
@@ -2660,317 +2664,163 @@ function getActiveModel() {
 
 
 
-  function handleAgentEvent(evt) {
-
-
-
-    const { event_type, data } = evt;
-
-
-
-
-
-
-
-    if (event_type === 'token') {
-
-
-
-      state.isStreaming = true;
-
-
-
-      state.streamingContent += data.delta || '';
-
-
-
-      updateStreamingDOM();
-
-
-
-    } else if (event_type === 'thought') {
-
-
-
-      state.streamingThought += data.delta || '';
-
-
-
-      updateStreamingDOM();
-
-
-
-    } else if (event_type === 'status') {
-
-
-
-      if (data.status === 'thinking') {
-
-
-
-        state.isStreaming = true;
-
-
-
-      } else if (data.status === 'reconnecting') {
-
-
-
-        state.isStreaming = true;
-
-
-
-        showToast(data.message || 'Network stream recovering...', 'info');
-
-
-
-      }
-
-
-
-    } else if (event_type === 'heartbeat') {
-
-
-
-      state.isStreaming = true;
-
-
-
-    } else if (event_type === 'tool_call_start') {
-
-
-
-      state.messages.push({
-
-
-
-        id: 'tc_' + Date.now(),
-
-
-
-        role: 'system',
-
-
-
-        created_at: new Date().toISOString(),
-
-
-
-        content: `[TOOL_INVOKED] ${data.tool_name}`,
-
-
-
-        toolData: data
-
-
-
-      });
-
-
-
-      render();
-
-
-
-      scrollToBottom();
-
-
-
-    } else if (event_type === 'tool_call_result') {
-
-
-
-      // Find matching tool call message and attach result
-
-
-
-      for (let i = state.messages.length - 1; i >= 0; i--) {
-
-
-
-        if (state.messages[i].toolData && state.messages[i].toolData.tool_call_id === data.tool_call_id) {
-
-
-
-          state.messages[i].toolResult = data.result;
-
-
-
-          break;
-
-
-
-        }
-
-
-
-      }
-
-
-
-      render();
-
-
-
-      scrollToBottom();
-
-
-
-    } else if (event_type === 'approval_required') {
-
-
-
-      state.isStreaming = false;
-
-
-
-      state.isAgentRunning = false;
-
-
-
-      const aid = data && (data.approval_id || data.id);
-
-
-
-      if (data && (!aid || !state.pendingApprovals.some(a => (a.approval_id || a.id) === aid))) {
-
-
-
-        state.pendingApprovals.push(data);
-
-
-
-      }
-
-
-
-      render();
-
-
-
-      scrollToBottom();
-
-
-
-    } else if (event_type === 'plan_update') {
-
-
-
-      if (data.plan) {
-
-
-
-        state.taskPlan = data.plan;
-
-
-
-        render();
-
-
-
-      }
-
-
-
-    } else if (event_type === 'conversation_renamed') {
-
-
-
-      const c = state.conversations.find(x => x.id === evt.conversation_id);
-
-
-
-      if (c && data && data.title) {
-
-
-
-        c.title = data.title;
-
-
-
-        render();
-
-
-
-        showToast('Session renamed to: ' + data.title, 'success');
-
-
-
-      }
-
-
-
-    } else if (event_type === 'done') {
-
-
-
-      state.isStreaming = false;
-
-      state.isAgentRunning = false;
-
-      state.turnStartTime = null;
-
-      state.streamingContent = '';
-
-
-
-      state.streamingThought = '';
-
-
-
-      refreshMessages();
-
-      checkAndProcessMessageQueue();
-
-
-
-    } else if (event_type === 'error') {
-
-
-
-      state.isStreaming = false;
-
-
-
-      state.messages.push({
-
-
-
-        id: 'err_' + Date.now(),
-
-
-
-        role: 'system',
-
-
-
-        content: `[ERROR] ${data.message || 'Execution error'}`
-
-
-
-      });
-
-
-
-      render();
-
-
-
-      scrollToBottom();
-
-
-
+    function getToolCallDescription(toolName, rawArgs) {
+    let args = rawArgs || {};
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch (e) { args = {}; }
     }
-
-
-
+    if (toolName === 'web_search') {
+      const q = args.query || args.text || '';
+      return q ? `Searching Google: "${q}"...` : 'Searching the web...';
+    }
+    if (toolName === 'desktop_control') {
+      const act = args.action || '';
+      const txt = args.text || '';
+      const tgt = args.target || '';
+      if (act === 'search') return `Searching in browser: "${txt}"...`;
+      if (act === 'open_url') return `Navigating browser: ${txt}...`;
+      if (act === 'open_app') return `Launching application: "${txt}"...`;
+      if (act === 'focus_window') return `Switching to window: "${txt}"...`;
+      if (act === 'type') return `Typing: "${(txt || '').slice(0, 30)}"...`;
+      if (act === 'click') return `Clicking "${tgt || txt || 'element'}"...`;
+      if (act === 'batch') return `Executing desktop automation macro (${(args.steps || []).length} steps)...`;
+      if (act === 'screenshot') return 'Capturing desktop screenshot...';
+      if (act === 'find_text' || act === 'ocr') return `Scanning screen with OCR: "${txt || 'elements'}"...`;
+      return `Desktop automation: ${act}...`;
+    }
+    if (toolName === 'read_file') {
+      const p = (args.path || '').replace(/\\/g, '/');
+      return `Reading file: ${p.split('/').pop() || 'file'}...`;
+    }
+    if (toolName === 'write_file' || toolName === 'create_file' || toolName === 'edit_file') {
+      const p = (args.path || '').replace(/\\/g, '/');
+      return `Editing file: ${p.split('/').pop() || 'file'}...`;
+    }
+    if (toolName === 'list_directory') {
+      const p = (args.path || '.').replace(/\\/g, '/');
+      return `Listing directory: ${p.split('/').pop() || p}...`;
+    }
+    if (toolName === 'run_command' || toolName === 'execute_command' || toolName === 'execute_powershell') {
+      const cmd = args.CommandLine || args.command || '';
+      return `Running command: ${cmd.slice(0, 40)}...`;
+    }
+    if (toolName && toolName.startsWith('fetch_rss')) return 'Fetching live RSS feeds...';
+    return `Running ${toolName}...`;
   }
 
+  function handleAgentEvent(evt) {
+    const { event_type, data } = evt;
 
+    if (event_type === 'token') {
+      state.isStreaming = true;
+      state.isAgentRunning = true;
+      if (state.thoughtStartTime && !state.thoughtDurationSec) {
+        state.thoughtDurationSec = Math.max(1, Math.round((Date.now() - state.thoughtStartTime) / 1000));
+      }
+      state.streamingContent += data.delta || '';
+      if (!state.liveStatusText || state.liveStatusText === 'Thinking...' || state.liveStatusText === 'Working...') {
+        state.liveStatusText = 'Responding...';
+      }
+      updateStreamingDOM();
+    } else if (event_type === 'thought') {
+      state.isStreaming = true;
+      state.isAgentRunning = true;
+      if (!state.thoughtStartTime) {
+        state.thoughtStartTime = Date.now();
+      }
+      state.streamingThought += data.delta || '';
+      state.liveStatusText = 'Thinking...';
+      updateStreamingDOM();
+    } else if (event_type === 'status') {
+      state.isStreaming = true;
+      state.isAgentRunning = true;
+      if (data && (data.description || data.message || data.action)) {
+        state.liveStatusText = data.description || data.message || (`Running ${data.action}...`);
+      } else if (data && data.status === 'thinking') {
+        state.liveStatusText = 'Thinking...';
+      } else if (data && data.status === 'reconnecting') {
+        showToast(data.message || 'Network stream recovering...', 'info');
+      }
+      updateStreamingDOM();
+    } else if (event_type === 'heartbeat') {
+      state.isStreaming = true;
+      state.isAgentRunning = true;
+    } else if (event_type === 'tool_call_start') {
+      state.isStreaming = true;
+      state.isAgentRunning = true;
+      const tcId = (data && data.tool_call_id) || ('tc_' + Date.now());
+      const desc = (data && data.description) || getToolCallDescription(data.tool_name, data.arguments);
+      state.liveStatusText = desc;
+      
+      if (!state.expandedToolDetails) state.expandedToolDetails = {};
+      state.expandedToolDetails[tcId] = true;
+      
+      if (!state.expandedWorkedSections) state.expandedWorkedSections = {};
+      state.expandedWorkedSections[tcId] = true;
 
-
-
-
+      state.messages.push({
+        id: tcId,
+        role: 'system',
+        created_at: new Date().toISOString(),
+        content: `[TOOL_INVOKED] ${data.tool_name}`,
+        toolData: data
+      });
+      render();
+      scrollToBottom(true);
+    } else if (event_type === 'tool_call_result') {
+      state.liveStatusText = 'Analyzing results & responding...';
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i].toolData && state.messages[i].toolData.tool_call_id === data.tool_call_id) {
+          state.messages[i].toolResult = data.result;
+          break;
+        }
+      }
+      render();
+      scrollToBottom();
+    } else if (event_type === 'approval_required') {
+      state.isStreaming = false;
+      state.isAgentRunning = false;
+      const aid = data && (data.approval_id || data.id);
+      if (data && (!aid || !state.pendingApprovals.some(a => (a.approval_id || a.id) === aid))) {
+        state.pendingApprovals.push(data);
+      }
+      render();
+      scrollToBottom();
+    } else if (event_type === 'plan_update') {
+      if (data.plan) {
+        state.taskPlan = data.plan;
+        render();
+      }
+    } else if (event_type === 'conversation_renamed') {
+      const c = state.conversations.find(x => x.id === evt.conversation_id);
+      if (c && data && data.title) {
+        c.title = data.title;
+        render();
+        showToast('Session renamed to: ' + data.title, 'success');
+      }
+    } else if (event_type === 'done') {
+      state.isStreaming = false;
+      state.isAgentRunning = false;
+      state.liveStatusText = '';
+      state.turnStartTime = null;
+      state.thoughtStartTime = null;
+      state.streamingContent = '';
+      state.streamingThought = '';
+      refreshMessages();
+      checkAndProcessMessageQueue();
+    } else if (event_type === 'error') {
+      state.isStreaming = false;
+      state.isAgentRunning = false;
+      state.liveStatusText = '';
+      state.messages.push({
+        id: 'err_' + Date.now(),
+        role: 'system',
+        content: `[ERROR] ${data.message || 'Execution error'}`
+      });
+      render();
+      scrollToBottom();
+    }
+  }
 
   function scrollToBottom(force = false) {
 
@@ -3616,11 +3466,12 @@ function getActiveModel() {
 
     render();
 
-
-
-    scrollToBottom();
-
-
+    scrollToBottom(true);
+    requestAnimationFrame(() => {
+      scrollToBottom(true);
+      setTimeout(() => scrollToBottom(true), 60);
+      setTimeout(() => scrollToBottom(true), 180);
+    });
 
   }
 
@@ -4152,48 +4003,23 @@ function getActiveModel() {
 
 
 
-    // Add optimistic user message
-
+        // Add optimistic user message
     state.messages.push({
-
-
-
       id: 'opt_' + Date.now(),
-
-
-
       role: 'user',
-
-
-
       content: text,
-
-
-
       created_at: new Date().toISOString()
-
-
-
     });
 
-
-
+    state.turnStartTime = Date.now();
+    state.thoughtStartTime = null;
+    state.thoughtDurationSec = null;
+    state.liveStatusText = 'Thinking...';
+    state.isAgentRunning = true;
     state.isStreaming = true;
-
-
-
     state.streamingContent = '';
-
-
-
     state.streamingThought = '';
-
-
-
     render();
-
-
-
     scrollToBottom(true);
 
 
@@ -6384,7 +6210,7 @@ function getActiveModel() {
 
 
 
-                <span>Thought for ${msg.tokens ? Math.max(5, Math.min(45, Math.floor(msg.tokens / 8))) : 15}s</span>
+                <span>Thought for ${state.thoughtDurationSec || (msg.tokens ? Math.max(1, Math.round(msg.tokens / 25)) : 5)}s</span>
 
 
 
@@ -6889,21 +6715,16 @@ function getActiveModel() {
 
 
           <!-- Working indicator -->
-
-
-
-          <div class="flex items-center gap-2 text-xs text-zinc-400 font-medium py-1">
-
-
-
+          <div class="flex items-center gap-2 text-xs text-zinc-300 font-medium py-1">
             <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-orb"></span>
-
-
-
-            <span>Working</span>
-
-
-
+            <span class="text-zinc-200 font-medium">${escapeHtml(state.liveStatusText || 'Working...')}</span>
+            ${(() => {
+              let liveSec = 0;
+              if (state.turnStartTime) {
+                liveSec = Math.max(1, Math.round((Date.now() - state.turnStartTime) / 1000));
+              }
+              return liveSec > 0 ? `<span class="text-zinc-500 font-mono text-[11px]">(${liveSec}s)</span>` : '';
+            })()}
           </div>
 
 
