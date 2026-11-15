@@ -80,43 +80,356 @@ def _attach_thread_to_input_desktop() -> bool:
     return False
 
 
-def _bring_window_to_foreground(target_name: Optional[str] = None) -> bool:
-    """Brings window matching target_name (or active top-level app) to foreground."""
+def _get_process_name_by_pid(pid: int) -> str:
+    """Returns the executable name for a given PID using Win32 API."""
+    if sys.platform != "win32" or not pid:
+        return ""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        h_proc = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h_proc:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            size = wintypes.DWORD(512)
+            if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value)
+        finally:
+            kernel32.CloseHandle(h_proc)
+    except Exception:
+        pass
+    return ""
+
+
+def _list_all_windows(min_size: int = 50) -> List[Dict[str, Any]]:
+    """Lists all visible top-level desktop windows with PID, process name, bounds, and active state."""
     if sys.platform != "win32":
+        return []
+    _attach_thread_to_input_desktop()
+    user32 = ctypes.windll.user32
+    active_hwnd = user32.GetForegroundWindow()
+    windows = []
+
+    def _enum_cb(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+
+                if title and title != "Program Manager":
+                    rect = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    w = rect.right - rect.left
+                    h = rect.bottom - rect.top
+
+                    if w >= min_size and h >= min_size:
+                        pid = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                        pname = _get_process_name_by_pid(pid.value)
+                        is_min = bool(user32.IsIconic(hwnd))
+
+                        windows.append({
+                            "hwnd": hwnd,
+                            "title": title,
+                            "process": pname,
+                            "pid": pid.value,
+                            "is_active": (hwnd == active_hwnd),
+                            "is_minimized": is_min,
+                            "rect": [rect.left, rect.top, w, h]
+                        })
+        return True
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+
+    # Sort active window first, then by area descending
+    windows.sort(key=lambda x: (not x["is_active"], -(x["rect"][2] * x["rect"][3])))
+    return windows
+
+
+def _find_window(query: str, windows: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    """Smart window locator matching query against browser aliases, process names, or window titles."""
+    if not query:
+        return None
+    if windows is None:
+        windows = _list_all_windows()
+
+    q_lower = str(query).lower().strip()
+
+    # Browser alias matching
+    browser_keywords = ("browser", "web", "internet", "web browser", "webbrowser", "\u0645\u0631\u0648\u0631\u06af\u0631")
+    browser_processes = ("firefox.exe", "chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe")
+    browser_titles = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "google", "search")
+
+    if any(bk in q_lower for bk in browser_keywords):
+        for w in windows:
+            p_lower = w["process"].lower()
+            t_lower = w["title"].lower()
+            if any(bp in p_lower for bp in browser_processes) or any(bt in t_lower for bt in browser_titles):
+                if "nova workstation" not in t_lower:
+                    return w
+
+    # Direct match on process or title
+    for w in windows:
+        p_lower = w["process"].lower()
+        t_lower = w["title"].lower()
+        if "nova" not in q_lower and "nova workstation" in t_lower:
+            continue
+        if q_lower == p_lower or q_lower == os.path.splitext(p_lower)[0] or q_lower in t_lower:
+            return w
+
+    # Partial substring match
+    for w in windows:
+        p_lower = w["process"].lower()
+        t_lower = w["title"].lower()
+        if "nova" not in q_lower and "nova workstation" in t_lower:
+            continue
+        if any(term in p_lower or term in t_lower for term in q_lower.split()):
+            return w
+
+    return None
+
+
+def _activate_window(hwnd: int) -> bool:
+    """Robust Win32 window focus & activation bypassing Windows foreground locks."""
+    if sys.platform != "win32" or not hwnd:
         return False
     try:
         user32 = ctypes.windll.user32
-        # Allow any process to set foreground window
+        kernel32 = ctypes.windll.kernel32
+
+        _attach_thread_to_input_desktop()
         user32.AllowSetForegroundWindow(0xFFFFFFFF)
-        if not target_name:
-            return True
 
-        target_lower = str(target_name).lower().strip()
-        matched_hwnd = None
+        SW_RESTORE = 9
+        SW_SHOW = 5
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        else:
+            user32.ShowWindow(hwnd, SW_SHOW)
 
-        def _enum_cb(hwnd, _):
-            nonlocal matched_hwnd
-            if user32.IsWindowVisible(hwnd):
-                length = user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    user32.GetWindowTextW(hwnd, buf, length + 1)
-                    title = buf.value.lower()
-                    if target_lower in title and "nova workstation" not in title:
-                        matched_hwnd = hwnd
-                        return False
-            return True
+        fg_hwnd = user32.GetForegroundWindow()
+        if fg_hwnd != hwnd:
+            fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+            cur_thread = kernel32.GetCurrentThreadId()
+            if fg_thread and cur_thread and fg_thread != cur_thread:
+                user32.AttachThreadInput(cur_thread, fg_thread, True)
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+                user32.AttachThreadInput(cur_thread, fg_thread, False)
+            else:
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+        else:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
 
-        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
-
-        if matched_hwnd:
-            SW_RESTORE = 9
-            user32.ShowWindow(matched_hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(matched_hwnd)
-            return True
+        time.sleep(0.08)
+        return True
     except Exception as e:
-        logger.debug(f"Failed to bring window to foreground: {e}")
+        logger.debug(f"Failed to activate window {hwnd}: {e}")
+        return False
+
+
+def _close_window(hwnd: int) -> bool:
+    """Closes a window cleanly using WM_CLOSE."""
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        WM_CLOSE = 0x0010
+        return bool(user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+    except Exception:
+        return False
+
+
+def _open_or_focus_browser(target_url: Optional[str] = None) -> Dict[str, Any]:
+    """Finds existing open browser or launches default browser, focuses it, and captures screen."""
+    bw = _find_window("browser")
+    if bw:
+        _activate_window(bw["hwnd"])
+        if target_url:
+            webbrowser.open(target_url)
+            time.sleep(1.0)
+            _activate_window(bw["hwnd"])
+        else:
+            time.sleep(0.3)
+        shot = _take_screenshot()
+        res = {
+            "status": "success",
+            "action": "open_browser",
+            "browser": bw["title"],
+            "process": bw["process"],
+            "message": f"Focused open browser '{bw['title']}' ({bw['process']}). Browser window is active."
+        }
+        if shot.get("image_base64"):
+            res["image_base64"] = shot["image_base64"]
+            res["screen_width"] = shot.get("screen_width")
+            res["screen_height"] = shot.get("screen_height")
+            res["frame_width"] = shot.get("frame_width")
+            res["frame_height"] = shot.get("frame_height")
+        return res
+
+    # No open browser: launch default
+    url = target_url or "https://www.google.com"
+    webbrowser.open(url)
+    time.sleep(1.5)
+    new_bw = _find_window("browser")
+    if new_bw:
+        _activate_window(new_bw["hwnd"])
+
+    shot = _take_screenshot()
+    res = {
+        "status": "success",
+        "action": "open_browser",
+        "url": url,
+        "message": f"Launched default browser with '{url}'. Browser window is active."
+    }
+    if shot.get("image_base64"):
+        res["image_base64"] = shot["image_base64"]
+        res["screen_width"] = shot.get("screen_width")
+        res["screen_height"] = shot.get("screen_height")
+        res["frame_width"] = shot.get("frame_width")
+        res["frame_height"] = shot.get("frame_height")
+    return res
+
+
+def _search_in_browser(query: str, suppress_screenshot: bool = False) -> Dict[str, Any]:
+    """Instant 1-turn Google search: opens Google search URL and brings browser window to front."""
+    if not query:
+        return {"status": "error", "message": "Missing search query"}
+
+    target_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+    webbrowser.open(target_url)
+    time.sleep(1.2)
+
+    bw = _find_window("browser")
+    if bw:
+        _activate_window(bw["hwnd"])
+
+    res = {
+        "status": "success",
+        "action": "search",
+        "query": query,
+        "url": target_url,
+        "message": f"Searched for '{query}' in browser via Google. Results are active and displayed."
+    }
+    if not suppress_screenshot:
+        shot = _take_screenshot()
+        if shot.get("image_base64"):
+            res["image_base64"] = shot["image_base64"]
+            res["screen_width"] = shot.get("screen_width")
+            res["screen_height"] = shot.get("screen_height")
+            res["frame_width"] = shot.get("frame_width")
+            res["frame_height"] = shot.get("frame_height")
+    return res
+
+
+def _open_or_focus_app(app_name: str, suppress_screenshot: bool = False) -> Dict[str, Any]:
+    """Focuses app if already open, or launches it and brings to front."""
+    if not app_name:
+        return {"status": "error", "message": "Missing app name"}
+
+    # Special handling for browser
+    if app_name.lower().strip() in ("browser", "web", "internet"):
+        return _open_or_focus_browser()
+
+    existing = _find_window(app_name)
+    if existing:
+        _activate_window(existing["hwnd"])
+        time.sleep(0.4)
+        res = {
+            "status": "success",
+            "action": "open_app",
+            "name": app_name,
+            "window": existing["title"],
+            "process": existing["process"],
+            "message": f"App '{app_name}' is already running ('{existing['title']}'). Brought to foreground."
+        }
+        if not suppress_screenshot:
+            shot = _take_screenshot()
+            if shot.get("image_base64"):
+                res["image_base64"] = shot["image_base64"]
+                res["screen_width"] = shot.get("screen_width")
+                res["screen_height"] = shot.get("screen_height")
+                res["frame_width"] = shot.get("frame_width")
+                res["frame_height"] = shot.get("frame_height")
+        return res
+
+    # Not running: launch
+    subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    time.sleep(1.5)
+    new_win = _find_window(app_name)
+    if new_win:
+        _activate_window(new_win["hwnd"])
+
+    res = {
+        "status": "success",
+        "action": "open_app",
+        "name": app_name,
+        "message": f"Launched application '{app_name}'."
+    }
+    if not suppress_screenshot:
+        shot = _take_screenshot()
+        if shot.get("image_base64"):
+            res["image_base64"] = shot["image_base64"]
+            res["screen_width"] = shot.get("screen_width")
+            res["screen_height"] = shot.get("screen_height")
+            res["frame_width"] = shot.get("frame_width")
+            res["frame_height"] = shot.get("frame_height")
+    return res
+
+
+def _handle_focus_window(target: str, suppress_screenshot: bool = False) -> Dict[str, Any]:
+    """Brings the specified window to the foreground."""
+    if not target:
+        return {"status": "error", "message": "Missing target window name or process"}
+
+    target_clean = str(target).lower().strip()
+    if target_clean in ("browser", "web", "internet", "\u0645\u0631\u0648\u0631\u06af\u0631"):
+        return _open_or_focus_browser()
+
+    w = _find_window(target_clean)
+    if not w:
+        all_wins = _list_all_windows()
+        available = [f"'{win['title']}' ({win['process']})" for win in all_wins[:6]]
+        return {
+            "status": "warning",
+            "action": "focus_window",
+            "target": target,
+            "found": False,
+            "message": f"Window matching '{target}' was not found. Open windows: {', '.join(available)}"
+        }
+
+    _activate_window(w["hwnd"])
+    time.sleep(0.3)
+    res = {
+        "status": "success",
+        "action": "focus_window",
+        "target": target,
+        "matched_window": w,
+        "message": f"Brought '{w['title']}' ({w['process']}) to foreground."
+    }
+    if not suppress_screenshot:
+        shot = _take_screenshot()
+        if shot.get("image_base64"):
+            res["image_base64"] = shot["image_base64"]
+            res["screen_width"] = shot.get("screen_width")
+            res["screen_height"] = shot.get("screen_height")
+            res["frame_width"] = shot.get("frame_width")
+            res["frame_height"] = shot.get("frame_height")
+    return res
+
+
+def _bring_window_to_foreground(target_name: Optional[str] = None) -> bool:
+    """Compatibility wrapper: brings window matching target_name to foreground."""
+    if not target_name:
+        return True
+    w = _find_window(target_name)
+    if w:
+        return _activate_window(w["hwnd"])
     return False
 
 
@@ -378,13 +691,13 @@ def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_cl
             if t_clean == q_clean:
                 sim = 1.0
             elif q_clean in t_clean:
-                sim = 0.85 + (len(q_clean) / max(len(t_clean), 1)) * 0.1
-            elif t_clean in q_clean:
-                sim = 0.75 + (len(t_clean) / max(len(q_clean), 1)) * 0.1
+                sim = 0.80 + (len(q_clean) / max(len(t_clean), 1)) * 0.15
+            elif t_clean in q_clean and len(t_clean) >= 3 and (len(t_clean) / len(q_clean) >= 0.35):
+                sim = 0.70 + (len(t_clean) / len(q_clean)) * 0.15
             else:
                 sim = difflib.SequenceMatcher(None, q_clean, t_clean).ratio()
 
-            if sim >= 0.50:
+            if sim >= 0.55:
                 match_dict = dict(it)
                 match_dict["similarity"] = round(sim, 3)
                 scored_matches.append(match_dict)
@@ -675,7 +988,7 @@ def _keyboard_press(key_combo: str):
 
 tool_desktop_control = BaseTool(
     name="desktop_control",
-    description="Controls the desktop GUI environment using mouse, keyboard, and screen OCR element detection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, etc. Supports 1-turn instant search ('search'), composite macro execution ('batch'), and finding UI elements by text label ('find_text').",
+    description="Enterprise-grade desktop GUI environment control using mouse, keyboard, window management, and screen OCR element detection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, IDEs, etc. Supports 1-turn instant search ('search'), window focus/activation ('focus_window'), process enumeration ('list_windows'), composite macro execution ('batch'), and finding UI elements by text label ('find_text').",
     category="system",
     risk_level="HIGH",
     requires_approval=False,
@@ -683,16 +996,20 @@ tool_desktop_control = BaseTool(
         ToolParameter(
             name="action",
             type="string",
-            description="The desktop action to perform: 'search' (instant 1-turn web search in default browser), 'batch' (executes multiple steps sequentially in 1 call), 'find_text' (locates text/buttons with OCR and optionally clicks), 'ocr' (scans screen and lists all UI text elements with coordinates), 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
-            enum=["search", "batch", "find_text", "ocr", "screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
+            description="The desktop action to perform: 'search' (instant 1-turn web search in default browser), 'focus_window' (brings target window to foreground by app/process/title or 'browser'), 'list_windows' (enumerates all open windows and titles), 'open_browser' (opens or focuses browser), 'open_app' (launches app or focuses if already open), 'open_url' (navigates browser to URL), 'batch' (executes multiple steps sequentially in 1 call), 'find_text' (locates text/buttons with OCR and optionally clicks), 'ocr' (scans screen and lists all UI text elements with coordinates), 'screenshot', 'click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'close_window', 'wait'.",
+            enum=[
+                "search", "focus_window", "list_windows", "open_browser", "open_app", "open_url", "batch",
+                "find_text", "ocr", "screenshot", "click", "double_click", "right_click", "middle_click",
+                "move", "drag", "type", "press_key", "scroll", "close_window", "wait"
+            ]
         ),
-        ToolParameter(name="text", type="string", description="Text to type using keyboard, query for 'search', text to search for in 'find_text', URL for 'open_url', or app name for 'open_app'", required=False),
+        ToolParameter(name="text", type="string", description="Text to type using keyboard, query for 'search', window title/process for 'focus_window', text to search for in 'find_text', URL for 'open_url', or app name for 'open_app'", required=False),
         ToolParameter(name="steps", type="array", description="List of step dictionaries to execute in a single batch call. Each step has 'action', 'text', 'key', 'x', 'y', 'wait_seconds', etc.", required=False),
+        ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4', 'alt+tab')", required=False),
         ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="y", type="integer", description="Y coordinate on screen (0 to screen height) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="end_x", type="integer", description="Target X coordinate for drag operations", required=False),
         ToolParameter(name="end_y", type="integer", description="Target Y coordinate for drag operations", required=False),
-        ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4')", required=False),
         ToolParameter(name="click", type="boolean", description="Whether to automatically click the found text element when action='find_text'", required=False),
         ToolParameter(name="double_click", type="boolean", description="Whether to double click instead of single click when action='find_text'", required=False),
         ToolParameter(name="press_enter", type="boolean", description="Whether to press Enter after typing text", required=False),
@@ -702,23 +1019,166 @@ tool_desktop_control = BaseTool(
     ]
 )
 
+ACTION_ALIASES = {
+    # wait
+    "wait": "wait",
+    "wait_seconds": "wait",
+    "sleep": "wait",
+    "delay": "wait",
+    "pause": "wait",
+    # press_key
+    "press_key": "press_key",
+    "key_press": "press_key",
+    "press": "press_key",
+    "hotkey": "press_key",
+    "shortcut": "press_key",
+    "key": "press_key",
+    # type
+    "type": "type",
+    "write": "type",
+    "input": "type",
+    "input_text": "type",
+    "send_keys": "type",
+    # click
+    "click": "click",
+    "left_click": "click",
+    "click_mouse": "click",
+    # double_click
+    "double_click": "double_click",
+    "dbl_click": "double_click",
+    # right_click
+    "right_click": "right_click",
+    "context_menu": "right_click",
+    # middle_click
+    "middle_click": "middle_click",
+    # move
+    "move": "move",
+    "mouse_move": "move",
+    "hover": "move",
+    # drag
+    "drag": "drag",
+    "mouse_drag": "drag",
+    "drag_and_drop": "drag",
+    # scroll
+    "scroll": "scroll",
+    "mouse_scroll": "scroll",
+    "wheel": "scroll",
+    # screenshot
+    "screenshot": "screenshot",
+    "capture_screen": "screenshot",
+    "screen": "screenshot",
+    # find_text
+    "find_text": "find_text",
+    "click_text": "find_text",
+    "find": "find_text",
+    "find_and_click": "find_text",
+    # ocr
+    "ocr": "ocr",
+    "scan_screen": "ocr",
+    "read_screen": "ocr",
+    # window management
+    "list_windows": "list_windows",
+    "get_windows": "list_windows",
+    "windows": "list_windows",
+    "focus_window": "focus_window",
+    "activate_window": "focus_window",
+    "switch_window": "focus_window",
+    "bring_to_front": "focus_window",
+    "close_window": "close_window",
+    "close_app": "close_window",
+    # browser actions
+    "search": "search",
+    "search_browser": "search",
+    "google_search": "search",
+    "web_search": "search",
+    "open_browser": "open_browser",
+    "browser": "open_browser",
+    "focus_browser": "open_browser",
+    "open_url": "open_url",
+    "navigate": "open_url",
+    "go_to_url": "open_url",
+    # apps
+    "open_app": "open_app",
+    "launch_app": "open_app",
+    "start_app": "open_app",
+    "run_app": "open_app",
+    # batch
+    "batch": "batch",
+    "macro": "batch",
+    "sequence": "batch",
+    "steps": "batch",
+}
+
 
 async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot: bool = False) -> Dict[str, Any]:
-    action = (arguments.get("action") or "").lower().strip()
+    raw_action = (arguments.get("action") or "").lower().strip()
+    action = ACTION_ALIASES.get(raw_action, raw_action)
+
     x = arguments.get("x")
     y = arguments.get("y")
     end_x = arguments.get("end_x")
     end_y = arguments.get("end_y")
-    text = arguments.get("text") or arguments.get("query")
-    key = arguments.get("key")
+    text = (
+        arguments.get("text")
+        or arguments.get("query")
+        or arguments.get("title")
+        or arguments.get("name")
+        or arguments.get("url")
+        or arguments.get("input")
+    )
+    key = arguments.get("key") or arguments.get("keys") or arguments.get("combo")
     click_flag = bool(arguments.get("click", False))
     double_click_flag = bool(arguments.get("double_click", False))
     press_enter = bool(arguments.get("press_enter", False))
     clear_first = bool(arguments.get("clear_first", False))
     scroll_clicks = arguments.get("scroll_clicks")
-    wait_sec = arguments.get("wait_seconds", 0.5)
 
-    if action == "find_text":
+    if action == "search":
+        return _search_in_browser(text or "", suppress_screenshot=suppress_screenshot)
+
+    elif action == "focus_window":
+        return _handle_focus_window(text or "", suppress_screenshot=suppress_screenshot)
+
+    elif action == "list_windows":
+        wins = _list_all_windows()
+        return {
+            "status": "success",
+            "action": "list_windows",
+            "total_windows": len(wins),
+            "windows": wins,
+            "message": f"Found {len(wins)} open visible windows."
+        }
+
+    elif action == "close_window":
+        if not text:
+            return {"status": "error", "message": "Missing window title or process name to close"}
+        w = _find_window(text)
+        if not w:
+            return {"status": "warning", "action": "close_window", "target": text, "found": False, "message": f"Window '{text}' was not found"}
+        closed = _close_window(w["hwnd"])
+        return {
+            "status": "success" if closed else "error",
+            "action": "close_window",
+            "target": text,
+            "closed": closed,
+            "message": f"Closed window '{w['title']}' ({w['process']})" if closed else f"Failed to send WM_CLOSE to '{w['title']}'"
+        }
+
+    elif action == "open_browser":
+        return _open_or_focus_browser(text)
+
+    elif action == "open_app":
+        return _open_or_focus_app(text or "", suppress_screenshot=suppress_screenshot)
+
+    elif action == "open_url":
+        target_url = text or arguments.get("url")
+        if not target_url:
+            return {"status": "error", "message": "Missing url or text parameter for open_url"}
+        if not (target_url.startswith("http://") or target_url.startswith("https://")):
+            target_url = "https://" + target_url
+        return _open_or_focus_browser(target_url)
+
+    elif action == "find_text":
         return _ocr_screen(query=text, auto_click=click_flag, double_click=double_click_flag)
 
     elif action == "ocr":
@@ -726,32 +1186,6 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
 
     elif action == "screenshot":
         return _take_screenshot()
-
-    elif action == "search":
-        search_query = text or (arguments.get("query") if "query" in arguments else "")
-        if not search_query:
-            return {"status": "error", "message": "Missing text or query parameter for search"}
-
-        target_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(search_query)}"
-        _bring_window_to_foreground()
-        webbrowser.open(target_url)
-        time.sleep(1.2)
-        res = {
-            "status": "success",
-            "action": "search",
-            "query": search_query,
-            "url": target_url,
-            "message": f"Successfully performed instant Google search for '{search_query}'. Browser window is active."
-        }
-        if not suppress_screenshot:
-            shot = _take_screenshot()
-            if shot.get("image_base64"):
-                res["image_base64"] = shot["image_base64"]
-                res["screen_width"] = shot.get("screen_width")
-                res["screen_height"] = shot.get("screen_height")
-                res["frame_width"] = shot.get("frame_width")
-                res["frame_height"] = shot.get("frame_height")
-        return res
 
     elif action == "click":
         _mouse_click(x, y, button="left", double=False)
@@ -767,6 +1201,11 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         _mouse_click(x, y, button="right", double=False)
         mx, my = _map_coords(x, y)
         return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
+
+    elif action == "middle_click":
+        _mouse_click(x, y, button="middle", double=False)
+        mx, my = _map_coords(x, y)
+        return {"status": "success", "action": "middle_click", "screen_x": mx, "screen_y": my, "message": f"Middle clicked at ({mx}, {my})"}
 
     elif action == "move":
         if x is not None and y is not None:
@@ -792,7 +1231,6 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         if not text:
             return {"status": "error", "message": "Missing text parameter to type"}
 
-        # Auto-focus if coordinates are provided
         if x is not None and y is not None:
             _mouse_click(x, y, button="left", double=False)
             time.sleep(0.12)
@@ -803,12 +1241,12 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
             _keyboard_press("backspace")
             time.sleep(0.04)
 
-        _keyboard_type(text)
+        _keyboard_type(str(text))
 
         if press_enter:
             time.sleep(0.08)
             _keyboard_press("enter")
-            time.sleep(0.9)
+            time.sleep(0.8)
             res = {
                 "status": "success",
                 "action": "type",
@@ -836,71 +1274,37 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         }
 
     elif action == "press_key":
-        if key:
-            _keyboard_press(key)
-            return {"status": "success", "action": "press_key", "key": key}
+        key_name = key or arguments.get("key") or arguments.get("text")
+        if key_name:
+            _keyboard_press(str(key_name))
+            return {"status": "success", "action": "press_key", "key": key_name}
         return {"status": "error", "message": "Missing key parameter"}
 
-    elif action == "open_url":
-        target_url = text or (arguments.get("url") if "url" in arguments else None)
-        if not target_url:
-            return {"status": "error", "message": "Missing url or text parameter for open_url"}
-        if not (target_url.startswith("http://") or target_url.startswith("https://")):
-            target_url = "https://" + target_url
-        _bring_window_to_foreground()
-        webbrowser.open(target_url)
-        time.sleep(1.5)
-        res = {
-            "status": "success",
-            "action": "open_url",
-            "url": target_url,
-            "message": f"Opened '{target_url}' in browser."
-        }
-        if not suppress_screenshot:
-            shot = _take_screenshot()
-            if shot.get("image_base64"):
-                res["image_base64"] = shot["image_base64"]
-                res["screen_width"] = shot.get("screen_width")
-                res["screen_height"] = shot.get("screen_height")
-                res["frame_width"] = shot.get("frame_width")
-                res["frame_height"] = shot.get("frame_height")
-        return res
-
-    elif action == "open_app":
-        app_name = text or arguments.get("name") or "browser"
-        _bring_window_to_foreground()
-        subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-        time.sleep(1.5)
-        _bring_window_to_foreground(app_name)
-        res = {
-            "status": "success",
-            "action": "open_app",
-            "name": app_name,
-            "message": f"Launched application '{app_name}'."
-        }
-        if not suppress_screenshot:
-            shot = _take_screenshot()
-            if shot.get("image_base64"):
-                res["image_base64"] = shot["image_base64"]
-                res["screen_width"] = shot.get("screen_width")
-                res["screen_height"] = shot.get("screen_height")
-                res["frame_width"] = shot.get("frame_width")
-                res["frame_height"] = shot.get("frame_height")
-        return res
-
     elif action == "wait":
-        time.sleep(float(wait_sec or 0.5))
-        return {"status": "success", "action": "wait", "seconds": wait_sec}
+        raw_dur = (
+            arguments.get("wait_seconds")
+            or arguments.get("seconds")
+            or arguments.get("duration")
+            or arguments.get("text")
+            or 0.5
+        )
+        try:
+            sec = float(raw_dur)
+        except (ValueError, TypeError):
+            sec = 0.5
+        time.sleep(sec)
+        return {"status": "success", "action": "wait", "seconds": sec}
 
     else:
-        return {"status": "error", "message": f"Unknown action '{action}'"}
+        return {"status": "error", "message": f"Unknown action '{raw_action}'"}
 
 
 async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    action = (arguments.get("action") or "").lower().strip()
+    raw_action = (arguments.get("action") or "").lower().strip()
+    action = ACTION_ALIASES.get(raw_action, raw_action)
     try:
         if action == "batch":
-            steps = arguments.get("steps") or []
+            steps = arguments.get("steps") or arguments.get("actions") or []
             if not steps or not isinstance(steps, list):
                 return {"status": "error", "message": "Missing or invalid 'steps' parameter for batch action. Provide a list of step dictionaries."}
 
@@ -908,17 +1312,22 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
             for idx, step in enumerate(steps):
                 if not isinstance(step, dict):
                     continue
-                step_action = (step.get("action") or "").lower().strip()
+                step_raw = (step.get("action") or "").lower().strip()
                 sub_res = await _execute_single_action(step, suppress_screenshot=True)
                 executed_steps.append({
                     "step": idx + 1,
-                    "action": step_action,
+                    "action": step_raw,
                     "status": sub_res.get("status", "unknown"),
                     "details": sub_res.get("message") or sub_res
                 })
-                step_wait = step.get("wait_seconds", 0.05)
-                if step_wait > 0:
-                    time.sleep(step_wait)
+                # Safety pause between rapid physical actions if specified
+                step_wait = step.get("wait_seconds") or step.get("seconds") or 0.05
+                try:
+                    sw = float(step_wait)
+                    if sw > 0:
+                        time.sleep(sw)
+                except Exception:
+                    pass
 
             final_shot = _take_screenshot()
             res = {
@@ -939,7 +1348,7 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
         return await _execute_single_action(arguments, suppress_screenshot=False)
 
     except Exception as e:
-        logger.error(f"Desktop control failed for action '{action}': {e}", exc_info=True)
+        logger.error(f"Desktop control failed for action '{raw_action}': {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 

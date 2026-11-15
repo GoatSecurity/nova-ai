@@ -88,13 +88,13 @@ async def test_desktop_control_batch_and_search(monkeypatch):
     assert res_search.get("action") == "search"
     assert "test+query" in res_search.get("url", "")
 
-    # Test batch action
+    # Test batch action with aliases
     batch_args = {
         "action": "batch",
         "steps": [
-            {"action": "wait", "wait_seconds": 0.01},
+            {"action": "wait_seconds", "wait_seconds": 0.01},
             {"action": "move", "x": 100, "y": 100},
-            {"action": "wait", "wait_seconds": 0.01}
+            {"action": "sleep", "duration": 0.01}
         ]
     }
     res_batch = await tool_registry.execute_tool("desktop_control", batch_args, {})
@@ -102,6 +102,15 @@ async def test_desktop_control_batch_and_search(monkeypatch):
     assert res_batch.get("action") == "batch"
     assert res_batch.get("total_steps") == 3
     assert len(res_batch.get("steps_completed", [])) == 3
+
+    # Test list_windows action
+    res_list = await tool_registry.execute_tool("desktop_control", {"action": "list_windows"}, {})
+    assert res_list.get("status") == "success"
+    assert "windows" in res_list
+
+    # Test focus_window action
+    res_focus = await tool_registry.execute_tool("desktop_control", {"action": "focus_window", "text": "browser"}, {})
+    assert res_focus.get("status") in ("success", "warning")
 
 def test_strip_raw_tool_calls():
     from backend.app.agent.orchestrator import _strip_raw_tool_calls
