@@ -7,7 +7,9 @@ import ctypes
 import threading
 import webbrowser
 import subprocess
-from typing import Dict, Any, Optional, Tuple
+import urllib.parse
+import difflib
+from typing import Dict, Any, Optional, Tuple, List
 from ctypes import wintypes
 from PIL import Image
 from backend.app.tools.base import BaseTool, ToolParameter
@@ -75,6 +77,46 @@ def _attach_thread_to_input_desktop() -> bool:
             return bool(user32.SetThreadDesktop(h_input))
     except Exception as e:
         logger.debug(f"Failed to attach thread desktop: {e}")
+    return False
+
+
+def _bring_window_to_foreground(target_name: Optional[str] = None) -> bool:
+    """Brings window matching target_name (or active top-level app) to foreground."""
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        # Allow any process to set foreground window
+        user32.AllowSetForegroundWindow(0xFFFFFFFF)
+        if not target_name:
+            return True
+
+        target_lower = str(target_name).lower().strip()
+        matched_hwnd = None
+
+        def _enum_cb(hwnd, _):
+            nonlocal matched_hwnd
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    title = buf.value.lower()
+                    if target_lower in title and "nova workstation" not in title:
+                        matched_hwnd = hwnd
+                        return False
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+
+        if matched_hwnd:
+            SW_RESTORE = 9
+            user32.ShowWindow(matched_hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(matched_hwnd)
+            return True
+    except Exception as e:
+        logger.debug(f"Failed to bring window to foreground: {e}")
     return False
 
 
@@ -326,20 +368,30 @@ def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_cl
 
     if query:
         q_clean = query.strip().lower()
-        exact_matches = []
-        partial_matches = []
+        scored_matches = []
         for it in items:
             t_clean = it["text"].lower()
+            # Prevent accidental match of NOVA workstation UI elements when searching for target apps
+            if "nova" not in q_clean and ("nova workstation" in t_clean or "ask anything, @" in t_clean):
+                continue
+
             if t_clean == q_clean:
-                exact_matches.append(it)
-            elif q_clean in t_clean or any(word in t_clean for word in q_clean.split()):
-                partial_matches.append(it)
+                sim = 1.0
+            elif q_clean in t_clean:
+                sim = 0.85 + (len(q_clean) / max(len(t_clean), 1)) * 0.1
+            elif t_clean in q_clean:
+                sim = 0.75 + (len(t_clean) / max(len(q_clean), 1)) * 0.1
+            else:
+                sim = difflib.SequenceMatcher(None, q_clean, t_clean).ratio()
 
-        exact_matches.sort(key=lambda x: x["score"], reverse=True)
-        partial_matches.sort(key=lambda x: x["score"], reverse=True)
-        all_matches = exact_matches + partial_matches
+            if sim >= 0.50:
+                match_dict = dict(it)
+                match_dict["similarity"] = round(sim, 3)
+                scored_matches.append(match_dict)
 
-        if not all_matches:
+        scored_matches.sort(key=lambda x: (x["similarity"], x["score"]), reverse=True)
+
+        if not scored_matches:
             return {
                 "status": "warning",
                 "action": "find_text",
@@ -350,15 +402,15 @@ def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_cl
                 "message": f"Text '{query}' was not found on screen. {len(items)} other text elements were detected."
             }
 
-        best = all_matches[0]
+        best = scored_matches[0]
         result = {
             "status": "success",
             "action": "find_text",
             "query": query,
             "found": True,
             "best_match": best,
-            "all_matches": all_matches[:5],
-            "total_matches": len(all_matches),
+            "all_matches": scored_matches[:5],
+            "total_matches": len(scored_matches),
             "screen_width": w,
             "screen_height": h
         }
@@ -623,7 +675,7 @@ def _keyboard_press(key_combo: str):
 
 tool_desktop_control = BaseTool(
     name="desktop_control",
-    description="Controls the desktop GUI environment using mouse, keyboard, and screen OCR element detection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, etc. Supports finding UI elements by text label ('find_text') and executing actions in a single rapid turn.",
+    description="Controls the desktop GUI environment using mouse, keyboard, and screen OCR element detection. Designed for vision-capable models to operate Windows applications, web browsers, Photoshop, etc. Supports 1-turn instant search ('search'), composite macro execution ('batch'), and finding UI elements by text label ('find_text').",
     category="system",
     risk_level="HIGH",
     requires_approval=False,
@@ -631,14 +683,15 @@ tool_desktop_control = BaseTool(
         ToolParameter(
             name="action",
             type="string",
-            description="The desktop action to perform: 'find_text' (locates text/buttons with OCR and optionally clicks), 'ocr' (scans screen and lists all UI text elements with coordinates), 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
-            enum=["find_text", "ocr", "screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
+            description="The desktop action to perform: 'search' (instant 1-turn web search in default browser), 'batch' (executes multiple steps sequentially in 1 call), 'find_text' (locates text/buttons with OCR and optionally clicks), 'ocr' (scans screen and lists all UI text elements with coordinates), 'screenshot', 'click', 'double_click', 'right_click', 'move', 'drag', 'type', 'press_key', 'scroll', 'open_url', 'open_app', 'wait'.",
+            enum=["search", "batch", "find_text", "ocr", "screenshot", "click", "double_click", "right_click", "move", "drag", "type", "press_key", "scroll", "open_url", "open_app", "wait"]
         ),
+        ToolParameter(name="text", type="string", description="Text to type using keyboard, query for 'search', text to search for in 'find_text', URL for 'open_url', or app name for 'open_app'", required=False),
+        ToolParameter(name="steps", type="array", description="List of step dictionaries to execute in a single batch call. Each step has 'action', 'text', 'key', 'x', 'y', 'wait_seconds', etc.", required=False),
         ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="y", type="integer", description="Y coordinate on screen (0 to screen height) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
         ToolParameter(name="end_x", type="integer", description="Target X coordinate for drag operations", required=False),
         ToolParameter(name="end_y", type="integer", description="Target Y coordinate for drag operations", required=False),
-        ToolParameter(name="text", type="string", description="Text to type using keyboard, or text to search for in 'find_text', or URL for 'open_url', or app name for 'open_app'", required=False),
         ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4')", required=False),
         ToolParameter(name="click", type="boolean", description="Whether to automatically click the found text element when action='find_text'", required=False),
         ToolParameter(name="double_click", type="boolean", description="Whether to double click instead of single click when action='find_text'", required=False),
@@ -650,13 +703,13 @@ tool_desktop_control = BaseTool(
 )
 
 
-async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot: bool = False) -> Dict[str, Any]:
     action = (arguments.get("action") or "").lower().strip()
     x = arguments.get("x")
     y = arguments.get("y")
     end_x = arguments.get("end_x")
     end_y = arguments.get("end_y")
-    text = arguments.get("text")
+    text = arguments.get("text") or arguments.get("query")
     key = arguments.get("key")
     click_flag = bool(arguments.get("click", False))
     double_click_flag = bool(arguments.get("double_click", False))
@@ -665,151 +718,225 @@ async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, A
     scroll_clicks = arguments.get("scroll_clicks")
     wait_sec = arguments.get("wait_seconds", 0.5)
 
-    try:
-        if action == "find_text":
-            return _ocr_screen(query=text, auto_click=click_flag, double_click=double_click_flag)
+    if action == "find_text":
+        return _ocr_screen(query=text, auto_click=click_flag, double_click=double_click_flag)
 
-        elif action == "ocr":
-            return _ocr_screen(query=None, auto_click=False)
+    elif action == "ocr":
+        return _ocr_screen(query=None, auto_click=False)
 
-        elif action == "screenshot":
-            return _take_screenshot()
+    elif action == "screenshot":
+        return _take_screenshot()
 
-        elif action == "click":
+    elif action == "search":
+        search_query = text or (arguments.get("query") if "query" in arguments else "")
+        if not search_query:
+            return {"status": "error", "message": "Missing text or query parameter for search"}
+
+        target_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(search_query)}"
+        _bring_window_to_foreground()
+        webbrowser.open(target_url)
+        time.sleep(1.2)
+        res = {
+            "status": "success",
+            "action": "search",
+            "query": search_query,
+            "url": target_url,
+            "message": f"Successfully performed instant Google search for '{search_query}'. Browser window is active."
+        }
+        if not suppress_screenshot:
+            shot = _take_screenshot()
+            if shot.get("image_base64"):
+                res["image_base64"] = shot["image_base64"]
+                res["screen_width"] = shot.get("screen_width")
+                res["screen_height"] = shot.get("screen_height")
+                res["frame_width"] = shot.get("frame_width")
+                res["frame_height"] = shot.get("frame_height")
+        return res
+
+    elif action == "click":
+        _mouse_click(x, y, button="left", double=False)
+        mx, my = _map_coords(x, y)
+        return {"status": "success", "action": "click", "screen_x": mx, "screen_y": my, "message": f"Left clicked at ({mx}, {my})"}
+
+    elif action == "double_click":
+        _mouse_click(x, y, button="left", double=True)
+        mx, my = _map_coords(x, y)
+        return {"status": "success", "action": "double_click", "screen_x": mx, "screen_y": my, "message": f"Double clicked at ({mx}, {my})"}
+
+    elif action == "right_click":
+        _mouse_click(x, y, button="right", double=False)
+        mx, my = _map_coords(x, y)
+        return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
+
+    elif action == "move":
+        if x is not None and y is not None:
+            _mouse_move(x, y)
+            mx, my = _map_coords(x, y)
+            return {"status": "success", "action": "move", "screen_x": mx, "screen_y": my, "message": f"Moved mouse to ({mx}, {my})"}
+        return {"status": "error", "message": "Missing x or y coordinate for move"}
+
+    elif action == "drag":
+        start_x = x or 0
+        start_y = y or 0
+        to_x = end_x if end_x is not None else start_x
+        to_y = end_y if end_y is not None else start_y
+        _mouse_drag(start_x, start_y, to_x, to_y)
+        return {"status": "success", "action": "drag", "from": [start_x, start_y], "to": [to_x, to_y]}
+
+    elif action == "scroll":
+        clicks = scroll_clicks if scroll_clicks is not None else 3
+        _mouse_scroll(clicks)
+        return {"status": "success", "action": "scroll", "clicks": clicks}
+
+    elif action == "type":
+        if not text:
+            return {"status": "error", "message": "Missing text parameter to type"}
+
+        # Auto-focus if coordinates are provided
+        if x is not None and y is not None:
             _mouse_click(x, y, button="left", double=False)
-            mx, my = _map_coords(x, y)
-            return {"status": "success", "action": "click", "screen_x": mx, "screen_y": my, "message": f"Left clicked at ({mx}, {my})"}
+            time.sleep(0.12)
 
-        elif action == "double_click":
-            _mouse_click(x, y, button="left", double=True)
-            mx, my = _map_coords(x, y)
-            return {"status": "success", "action": "double_click", "screen_x": mx, "screen_y": my, "message": f"Double clicked at ({mx}, {my})"}
+        if clear_first:
+            _keyboard_press("ctrl+a")
+            time.sleep(0.04)
+            _keyboard_press("backspace")
+            time.sleep(0.04)
 
-        elif action == "right_click":
-            _mouse_click(x, y, button="right", double=False)
-            mx, my = _map_coords(x, y)
-            return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
+        _keyboard_type(text)
 
-        elif action == "move":
-            if x is not None and y is not None:
-                _mouse_move(x, y)
-                mx, my = _map_coords(x, y)
-                return {"status": "success", "action": "move", "screen_x": mx, "screen_y": my, "message": f"Moved mouse to ({mx}, {my})"}
-            return {"status": "error", "message": "Missing x or y coordinate for move"}
-
-        elif action == "drag":
-            start_x = x or 0
-            start_y = y or 0
-            to_x = end_x if end_x is not None else start_x
-            to_y = end_y if end_y is not None else start_y
-            _mouse_drag(start_x, start_y, to_x, to_y)
-            return {"status": "success", "action": "drag", "from": [start_x, start_y], "to": [to_x, to_y]}
-
-        elif action == "scroll":
-            clicks = scroll_clicks if scroll_clicks is not None else 3
-            _mouse_scroll(clicks)
-            return {"status": "success", "action": "scroll", "clicks": clicks}
-
-        elif action == "type":
-            if not text:
-                return {"status": "error", "message": "Missing text parameter to type"}
-
-            # Auto-focus if coordinates are provided
-            if x is not None and y is not None:
-                _mouse_click(x, y, button="left", double=False)
-                time.sleep(0.12)
-
-            if clear_first:
-                _keyboard_press("ctrl+a")
-                time.sleep(0.04)
-                _keyboard_press("backspace")
-                time.sleep(0.04)
-
-            _keyboard_type(text)
-
-            if press_enter:
-                time.sleep(0.08)
-                _keyboard_press("enter")
-                time.sleep(1.2)
+        if press_enter:
+            time.sleep(0.08)
+            _keyboard_press("enter")
+            time.sleep(0.9)
+            res = {
+                "status": "success",
+                "action": "type",
+                "text": text,
+                "clicked_at": [x, y] if (x is not None and y is not None) else None,
+                "pressed_enter": True,
+                "message": f"Typed '{text}' and pressed Enter."
+            }
+            if not suppress_screenshot:
                 shot = _take_screenshot()
-                res = {
-                    "status": "success",
-                    "action": "type",
-                    "text": text,
-                    "clicked_at": [x, y] if (x is not None and y is not None) else None,
-                    "pressed_enter": True,
-                    "message": f"Typed '{text}' and pressed Enter. A fresh real-time screenshot is attached."
-                }
                 if shot.get("image_base64"):
                     res["image_base64"] = shot["image_base64"]
                     res["screen_width"] = shot.get("screen_width")
                     res["screen_height"] = shot.get("screen_height")
                     res["frame_width"] = shot.get("frame_width")
                     res["frame_height"] = shot.get("frame_height")
-                return res
+            return res
 
-            return {
-                "status": "success",
-                "action": "type",
-                "text": text,
-                "clicked_at": [x, y] if (x is not None and y is not None) else None,
-                "pressed_enter": False
-            }
+        return {
+            "status": "success",
+            "action": "type",
+            "text": text,
+            "clicked_at": [x, y] if (x is not None and y is not None) else None,
+            "pressed_enter": False
+        }
 
-        elif action == "press_key":
-            if key:
-                _keyboard_press(key)
-                return {"status": "success", "action": "press_key", "key": key}
-            return {"status": "error", "message": "Missing key parameter"}
+    elif action == "press_key":
+        if key:
+            _keyboard_press(key)
+            return {"status": "success", "action": "press_key", "key": key}
+        return {"status": "error", "message": "Missing key parameter"}
 
-        elif action == "open_url":
-            target_url = text or (arguments.get("url") if "url" in arguments else None)
-            if not target_url:
-                return {"status": "error", "message": "Missing url or text parameter for open_url"}
-            if not (target_url.startswith("http://") or target_url.startswith("https://")):
-                target_url = "https://" + target_url
-            webbrowser.open(target_url)
-            time.sleep(1.8)
+    elif action == "open_url":
+        target_url = text or (arguments.get("url") if "url" in arguments else None)
+        if not target_url:
+            return {"status": "error", "message": "Missing url or text parameter for open_url"}
+        if not (target_url.startswith("http://") or target_url.startswith("https://")):
+            target_url = "https://" + target_url
+        _bring_window_to_foreground()
+        webbrowser.open(target_url)
+        time.sleep(1.5)
+        res = {
+            "status": "success",
+            "action": "open_url",
+            "url": target_url,
+            "message": f"Opened '{target_url}' in browser."
+        }
+        if not suppress_screenshot:
             shot = _take_screenshot()
-            res = {
-                "status": "success",
-                "action": "open_url",
-                "url": target_url,
-                "message": f"Opened '{target_url}' in browser. A fresh real-time screenshot of the browser window is attached to this result. You can visually locate elements or use action='find_text' to click buttons/inputs."
-            }
             if shot.get("image_base64"):
                 res["image_base64"] = shot["image_base64"]
                 res["screen_width"] = shot.get("screen_width")
                 res["screen_height"] = shot.get("screen_height")
                 res["frame_width"] = shot.get("frame_width")
                 res["frame_height"] = shot.get("frame_height")
-            return res
+        return res
 
-        elif action == "open_app":
-            app_name = text or arguments.get("name") or "browser"
-            subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-            time.sleep(1.8)
+    elif action == "open_app":
+        app_name = text or arguments.get("name") or "browser"
+        _bring_window_to_foreground()
+        subprocess.Popen(f"start {app_name}", shell=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        time.sleep(1.5)
+        _bring_window_to_foreground(app_name)
+        res = {
+            "status": "success",
+            "action": "open_app",
+            "name": app_name,
+            "message": f"Launched application '{app_name}'."
+        }
+        if not suppress_screenshot:
             shot = _take_screenshot()
-            res = {
-                "status": "success",
-                "action": "open_app",
-                "name": app_name,
-                "message": f"Launched application '{app_name}'. A fresh screenshot of the desktop is attached. Use the visual frame or 'find_text' to interact with the application."
-            }
             if shot.get("image_base64"):
                 res["image_base64"] = shot["image_base64"]
                 res["screen_width"] = shot.get("screen_width")
                 res["screen_height"] = shot.get("screen_height")
                 res["frame_width"] = shot.get("frame_width")
                 res["frame_height"] = shot.get("frame_height")
+        return res
+
+    elif action == "wait":
+        time.sleep(float(wait_sec or 0.5))
+        return {"status": "success", "action": "wait", "seconds": wait_sec}
+
+    else:
+        return {"status": "error", "message": f"Unknown action '{action}'"}
+
+
+async def handle_desktop_control(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    action = (arguments.get("action") or "").lower().strip()
+    try:
+        if action == "batch":
+            steps = arguments.get("steps") or []
+            if not steps or not isinstance(steps, list):
+                return {"status": "error", "message": "Missing or invalid 'steps' parameter for batch action. Provide a list of step dictionaries."}
+
+            executed_steps = []
+            for idx, step in enumerate(steps):
+                if not isinstance(step, dict):
+                    continue
+                step_action = (step.get("action") or "").lower().strip()
+                sub_res = await _execute_single_action(step, suppress_screenshot=True)
+                executed_steps.append({
+                    "step": idx + 1,
+                    "action": step_action,
+                    "status": sub_res.get("status", "unknown"),
+                    "details": sub_res.get("message") or sub_res
+                })
+                step_wait = step.get("wait_seconds", 0.05)
+                if step_wait > 0:
+                    time.sleep(step_wait)
+
+            final_shot = _take_screenshot()
+            res = {
+                "status": "success",
+                "action": "batch",
+                "total_steps": len(executed_steps),
+                "steps_completed": executed_steps,
+                "message": f"Batch automation completed {len(executed_steps)} actions successfully. Final screen state is attached."
+            }
+            if final_shot.get("image_base64"):
+                res["image_base64"] = final_shot["image_base64"]
+                res["screen_width"] = final_shot.get("screen_width")
+                res["screen_height"] = final_shot.get("screen_height")
+                res["frame_width"] = final_shot.get("frame_width")
+                res["frame_height"] = final_shot.get("frame_height")
             return res
 
-        elif action == "wait":
-            time.sleep(float(wait_sec or 1.0))
-            return {"status": "success", "action": "wait", "seconds": wait_sec}
-
-        else:
-            return {"status": "error", "message": f"Unknown action '{action}'"}
+        return await _execute_single_action(arguments, suppress_screenshot=False)
 
     except Exception as e:
         logger.error(f"Desktop control failed for action '{action}': {e}", exc_info=True)

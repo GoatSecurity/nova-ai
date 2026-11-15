@@ -1349,23 +1349,28 @@ class AgentOrchestrator:
                     scr_w, scr_h = _get_screen_size()
                     system_prompt += (
                         f"\n\n### Desktop GUI & Screen Automation Instructions:\n"
-                    f"CRITICAL DIRECTIVE: You have DIRECT physical control of the user's mouse and keyboard via the `desktop_control` tool. NEVER tell the user you lack physical or graphical control of their browser or desktop, because you HAVE full control through `desktop_control`! Immediately invoke `desktop_control` whenever the user asks you to click, type, open browser, or interact with screen elements.\n"
-                        f"You have access to the `desktop_control` tool to visually inspect and operate the user's desktop mouse and keyboard on Windows.\n"
-                        f"- Current Screen Resolution: {scr_w}x{scr_h}. Coordinates you specify are automatically mapped to physical screen pixels.\n"
-                        f"- Instant Screen OCR & UI Element Detection:\n"
-                        f"  * Call `desktop_control(action='find_text', text='Search', click=True)` to instantly locate any button, menu, or text on screen (like in Photoshop, Chrome, etc.) and click it automatically in one step!\n"
-                        f"  * Call `desktop_control(action='ocr')` to scan the screen and receive a list of all visible text elements with their exact (x, y) coordinates.\n"
-                        f"- Visual Inspection:\n"
-                        f"  * Call `desktop_control(action='screenshot')` to capture and view the desktop screen at any point.\n"
-                        f"  * Always examine the visual screenshot or OCR results to find exact visual element coordinates before clicking.\n"
-                        f"- Interacting with Applications & Web Browsers:\n"
-                        f"  * To open any website: Call `desktop_control(action='open_url', text='https://www.google.com')`. This automatically opens the browser AND attaches a fresh screenshot of the loaded page!\n"
-                        f"  * To search Google directly: Call `desktop_control(action='open_url', text='https://www.google.com/search?q=YOUR_QUERY')`, or open Google and call `desktop_control(action='type', text='...', press_enter=True)`.\n"
-                        f"  * Always set `press_enter=True` when typing into search boxes, address bars, or terminals.\n"
-                        f"  * To click any button, menu, or text label (in Photoshop, browser, etc.), call `desktop_control(action='find_text', text='...', click=True)` for instant 1-step targeting!\n"
-                        f"  * To launch an app by name: Call `desktop_control(action='open_app', text='chrome')` (or 'msedge', 'notepad', 'calc', etc.), or call `action='press_key', key='win+r'` and type the app name.\n"
-                        f"  * Taskbar is at the bottom of the screen (y ~ {scr_h - 25}). You can click icons on the taskbar to open or switch apps.\n"
-                        f"  * Common hotkeys: 'enter', 'tab', 'win+r', 'alt+d' (focus address bar), 'ctrl+t' (new tab), 'ctrl+w' (close tab), 'ctrl+l' (address bar).\n"
+                        f"CRITICAL DIRECTIVE: You have DIRECT physical control of the user's mouse and keyboard via the `desktop_control` tool. NEVER tell the user you lack physical or graphical control of their browser or desktop, because you HAVE full control through `desktop_control`! Immediately invoke `desktop_control` whenever the user asks you to search, click, type, open browser, or interact with screen elements.\n"
+                        f"Current Screen Resolution: {scr_w}x{scr_h}. Coordinates you specify are automatically mapped to physical screen pixels.\n"
+                        f"\n"
+                        f"### ULTRA-FAST 1-TURN DIRECTIVES (MANDATORY):\n"
+                        f"1. **Searching Google or Web in Browser**:\n"
+                        f"   Whenever the user asks to search something in their browser or Google (e.g. 'search X in my browser', 'go to google and search X'):\n"
+                        f"   DO NOT split this across multiple slow turns (do NOT open Chrome, then wait, then click, then type)! That wastes time and causes errors.\n"
+                        f"   Instead, IMMEDIATELY call `desktop_control(action='search', text='QUERY')` DIRECTLY in ONE single tool call!\n"
+                        f"   This opens the user's browser straight to the Google search results in under 1 second, displays the page, and attaches a fresh screenshot. Fulfill the user's request instantly in a single turn!\n"
+                        f"\n"
+                        f"2. **Multi-Step Workflows & Batching**:\n"
+                        f"   Whenever an operation requires a series of actions (e.g. launching an app, pressing hotkey, typing text, or operating Photoshop):\n"
+                        f"   USE `action='batch', steps=[...]` to execute the ENTIRE sequence in ONE tool call without waiting for model roundtrips between steps!\n"
+                        f"   Example: `desktop_control(action='batch', steps=[{{'action': 'press_key', 'key': 'alt+d'}}, {{'action': 'type', 'text': 'https://example.com', 'press_enter': True}}])`\n"
+                        f"\n"
+                        f"3. **Instant Screen OCR & UI Element Detection**:\n"
+                        f"   * Call `desktop_control(action='find_text', text='Button Name', click=True)` to instantly locate any button, menu, or text on screen (in Photoshop, Chrome, etc.) and click it automatically in one step!\n"
+                        f"   * Call `desktop_control(action='ocr')` to scan the screen and receive a list of all visible text elements with their exact coordinates.\n"
+                        f"\n"
+                        f"4. **Direct Browser Navigation & Hotkeys**:\n"
+                        f"   * To navigate or search inside an already active browser, use 'alt+d' or 'ctrl+l' (which selects the address bar), then type with `press_enter=True`.\n"
+                        f"   * Common hotkeys: 'enter', 'tab', 'win+r', 'alt+d' (focus address bar), 'ctrl+t' (new tab), 'ctrl+w' (close tab), 'ctrl+l', 'alt+f4'.\n"
                     )
 
                 # Retrieve conversation messages (excluding placeholder) and unpack attachments for LLM
@@ -2292,19 +2297,30 @@ class AgentOrchestrator:
 
 
                 if model_has_vision and executed_screenshot_b64:
+                    # Prune previous screenshot images from in_turn_messages and formatted_messages
+                    # to keep context lightweight, prevent exponential KV-cache bloat, and eliminate multi-minute model stalls
+                    for prev_msg in in_turn_messages:
+                        if isinstance(prev_msg.get("content"), list):
+                            for part in prev_msg["content"]:
+                                if isinstance(part, dict) and part.get("type") == "image_url":
+                                    part["type"] = "text"
+                                    part["text"] = "[Previous desktop screenshot frame cleared to optimize context and response speed]"
+                                    part.pop("image_url", None)
+
+                    for prev_msg in formatted_messages:
+                        if isinstance(prev_msg.get("content"), list):
+                            for part in prev_msg["content"]:
+                                if isinstance(part, dict) and part.get("type") == "image_url":
+                                    part["type"] = "text"
+                                    part["text"] = "[Initial desktop screenshot frame cleared to optimize context and response speed]"
+                                    part.pop("image_url", None)
 
                     in_turn_messages.append({
-
                         "role": "user",
-
                         "content": [
-
                             {"type": "text", "text": "[DESKTOP SCREENSHOT] Current screen visual frame:"},
-
                             {"type": "image_url", "image_url": {"url": f"data:{_get_b64_mime(executed_screenshot_b64)};base64,{executed_screenshot_b64}"}}
-
                         ]
-
                     })
 
 

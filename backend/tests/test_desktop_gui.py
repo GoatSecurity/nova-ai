@@ -73,6 +73,36 @@ async def test_desktop_control_ocr_and_find_text():
     assert res_find.get("status") in ("warning", "error")
     assert res_find.get("query") == "NonExistentDummyTargetXYZ"
 
+@pytest.mark.asyncio
+async def test_desktop_control_batch_and_search(monkeypatch):
+    import webbrowser
+    monkeypatch.setattr(webbrowser, "open", lambda url: True)
+
+    # Test search action
+    res_search = await tool_registry.execute_tool(
+        "desktop_control",
+        {"action": "search", "text": "test query"},
+        {}
+    )
+    assert res_search.get("status") == "success"
+    assert res_search.get("action") == "search"
+    assert "test+query" in res_search.get("url", "")
+
+    # Test batch action
+    batch_args = {
+        "action": "batch",
+        "steps": [
+            {"action": "wait", "wait_seconds": 0.01},
+            {"action": "move", "x": 100, "y": 100},
+            {"action": "wait", "wait_seconds": 0.01}
+        ]
+    }
+    res_batch = await tool_registry.execute_tool("desktop_control", batch_args, {})
+    assert res_batch.get("status") == "success"
+    assert res_batch.get("action") == "batch"
+    assert res_batch.get("total_steps") == 3
+    assert len(res_batch.get("steps_completed", [])) == 3
+
 def test_strip_raw_tool_calls():
     from backend.app.agent.orchestrator import _strip_raw_tool_calls
 

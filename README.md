@@ -91,14 +91,16 @@ With a compatible vision-capable model, NOVA can inspect your actual desktop and
 
 **Desktop automation capabilities:**
 
+- Instant 1-turn web and browser search (`action='search'`).
+- Rapid composite batching for multi-step desktop workflows (`action='batch'`).
 - Real-time screen inspection.
 - Mouse movement and clicking.
 - Single-click and double-click actions.
 - Right-click and context menus.
 - Keyboard shortcuts.
-- Text typing and clipboard-based input.
+- Native Unicode and multilingual clipboard-based input (`CF_UNICODETEXT`).
 - Scrolling and drag-and-drop.
-- OCR-based text identification with `find_text`.
+- OCR-based text identification with `find_text` (powered by RapidOCR).
 - Opening and interacting with native applications.
 - Browser and application navigation.
 
@@ -435,7 +437,7 @@ Current release package:
 SHA-256:
 
 ```text
-332a98079622b209279a5f3099e6d3796781aff72dc7ac0563f1f0849ecf5d25
+387688169ff36a44d5df6a7ccae58d096ab15470cf9539673c1c71a0a18439a1
 ```
 
 #### Installation
