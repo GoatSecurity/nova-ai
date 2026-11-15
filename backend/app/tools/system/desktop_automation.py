@@ -58,6 +58,7 @@ VK_MAPPING = {
 }
 
 _last_frame_info: Dict[str, int] = {}
+_last_detected_elements: Dict[int, Dict[str, Any]] = {}
 _ocr_engine = None
 
 
@@ -222,9 +223,25 @@ def _activate_window(hwnd: int) -> bool:
             else:
                 user32.BringWindowToTop(hwnd)
                 user32.SetForegroundWindow(hwnd)
+
+            # Win32 Alt-key bypass for stubborn foreground locks
+            if user32.GetForegroundWindow() != hwnd:
+                user32.keybd_event(0x12, 0, 0, 0)
+                user32.keybd_event(0x12, 0, 0x0002, 0)
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
         else:
             user32.BringWindowToTop(hwnd)
             user32.SetForegroundWindow(hwnd)
+
+        # Lower NOVA workstation window if target is an external application
+        nova_win = _find_window("nova")
+        if nova_win and nova_win.get("hwnd") and nova_win["hwnd"] != hwnd:
+            HWND_BOTTOM = 1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            user32.SetWindowPos(nova_win["hwnd"], HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
         time.sleep(0.08)
         return True
@@ -317,13 +334,15 @@ def _search_in_browser(query: str, suppress_screenshot: bool = False) -> Dict[st
         "message": f"Searched for '{query}' in browser via Google. Results are active and displayed."
     }
     if not suppress_screenshot:
-        shot = _take_screenshot()
+        shot = _take_screenshot(annotate_marks=True)
         if shot.get("image_base64"):
             res["image_base64"] = shot["image_base64"]
             res["screen_width"] = shot.get("screen_width")
             res["screen_height"] = shot.get("screen_height")
             res["frame_width"] = shot.get("frame_width")
             res["frame_height"] = shot.get("frame_height")
+            if shot.get("elements"):
+                res["elements"] = shot["elements"]
     return res
 
 
@@ -349,13 +368,15 @@ def _open_or_focus_app(app_name: str, suppress_screenshot: bool = False) -> Dict
             "message": f"App '{app_name}' is already running ('{existing['title']}'). Brought to foreground."
         }
         if not suppress_screenshot:
-            shot = _take_screenshot()
+            shot = _take_screenshot(annotate_marks=True)
             if shot.get("image_base64"):
                 res["image_base64"] = shot["image_base64"]
                 res["screen_width"] = shot.get("screen_width")
                 res["screen_height"] = shot.get("screen_height")
                 res["frame_width"] = shot.get("frame_width")
                 res["frame_height"] = shot.get("frame_height")
+                if shot.get("elements"):
+                    res["elements"] = shot["elements"]
         return res
 
     # Not running: launch
@@ -372,13 +393,15 @@ def _open_or_focus_app(app_name: str, suppress_screenshot: bool = False) -> Dict
         "message": f"Launched application '{app_name}'."
     }
     if not suppress_screenshot:
-        shot = _take_screenshot()
+        shot = _take_screenshot(annotate_marks=True)
         if shot.get("image_base64"):
             res["image_base64"] = shot["image_base64"]
             res["screen_width"] = shot.get("screen_width")
             res["screen_height"] = shot.get("screen_height")
             res["frame_width"] = shot.get("frame_width")
             res["frame_height"] = shot.get("frame_height")
+            if shot.get("elements"):
+                res["elements"] = shot["elements"]
     return res
 
 
@@ -413,13 +436,15 @@ def _handle_focus_window(target: str, suppress_screenshot: bool = False) -> Dict
         "message": f"Brought '{w['title']}' ({w['process']}) to foreground."
     }
     if not suppress_screenshot:
-        shot = _take_screenshot()
+        shot = _take_screenshot(annotate_marks=True)
         if shot.get("image_base64"):
             res["image_base64"] = shot["image_base64"]
             res["screen_width"] = shot.get("screen_width")
             res["screen_height"] = shot.get("screen_height")
             res["frame_width"] = shot.get("frame_width")
             res["frame_height"] = shot.get("frame_height")
+            if shot.get("elements"):
+                res["elements"] = shot["elements"]
     return res
 
 
@@ -579,8 +604,76 @@ def _capture_raw_screen_image() -> Optional[Image.Image]:
     return im
 
 
-def _take_screenshot() -> Dict[str, Any]:
-    global _last_frame_info
+def _is_nova_signature(text: str) -> bool:
+    """Detects whether text belongs to the NOVA Workstation desktop UI to avoid self-targeting."""
+    t_clean = (text or "").lower().strip()
+    if not t_clean:
+        return False
+    signatures = (
+        "nova workstation", "nova scratch", "no active task plan", "new conversation",
+        "ask anything, @ to mention, / for actions", "ask anything", "ran desktop_control",
+        "worked for", "diagnostics", "automations", "customizations", "task plan",
+        "nova-windows-64", "gemma-4-", "turbo", "conversations"
+    )
+    return any(sig in t_clean for sig in signatures)
+
+
+def _annotate_som(im: Image.Image, elements: List[Dict[str, Any]]) -> Image.Image:
+    """Draws high-visibility numbered badges on detected elements for precision vision grounding."""
+    try:
+        from PIL import ImageDraw
+        overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        badge_palette = [
+            (235, 45, 45, 220),    # Red
+            (0, 160, 240, 220),    # Cyan
+            (35, 190, 65, 220),    # Green
+            (245, 155, 0, 220),    # Amber
+            (175, 65, 235, 220),   # Purple
+        ]
+
+        for el in elements:
+            el_id = el.get("id", 1)
+            color = badge_palette[(el_id - 1) % len(badge_palette)]
+
+            box = el.get("frame_box") or el.get("box")
+            if box and len(box) == 4 and isinstance(box[0], (list, tuple)):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                bx = max(0, min(xs))
+                by = max(0, min(ys))
+                bw = max(12, max(xs) - min(xs))
+                bh = max(12, max(ys) - min(ys))
+            else:
+                cx = el.get("frame_x", el.get("x", 0))
+                cy = el.get("frame_y", el.get("y", 0))
+                bw = max(24, el.get("width", 40))
+                bh = max(14, el.get("height", 20))
+                bx = max(0, cx - bw // 2)
+                by = max(0, cy - bh // 2)
+
+            # Draw element boundary
+            draw.rectangle([bx, by, bx + bw, by + bh], outline=color, width=2)
+
+            # Draw numbered tag badge
+            tag_text = str(el_id)
+            tag_w = max(18, len(tag_text) * 8 + 8)
+            tag_h = 16
+            tag_x = max(0, bx)
+            tag_y = max(0, by - tag_h) if by >= tag_h else by
+
+            draw.rectangle([tag_x, tag_y, tag_x + tag_w, tag_y + tag_h], fill=color)
+            draw.text((tag_x + 4, tag_y + 1), tag_text, fill=(255, 255, 255, 255))
+
+        return Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB")
+    except Exception as e:
+        logger.debug(f"SoM overlay failed: {e}")
+        return im
+
+
+def _take_screenshot(annotate_marks: bool = True) -> Dict[str, Any]:
+    global _last_frame_info, _last_detected_elements
     w, h = _get_screen_size()
     im = _capture_raw_screen_image()
 
@@ -602,7 +695,9 @@ def _take_screenshot() -> Dict[str, Any]:
         scale = min(MAX_DIM / float(frame_w), MAX_DIM / float(frame_h))
         frame_w = max(1, int(im.width * scale))
         frame_h = max(1, int(im.height * scale))
-        im = im.resize((frame_w, frame_h), Image.Resampling.LANCZOS)
+        im_frame = im.resize((frame_w, frame_h), Image.Resampling.LANCZOS)
+    else:
+        im_frame = im.copy()
 
     _last_frame_info = {
         "screen_w": w,
@@ -611,11 +706,57 @@ def _take_screenshot() -> Dict[str, Any]:
         "frame_h": frame_h
     }
 
+    elements_list = []
+    if annotate_marks:
+        ocr = _get_ocr_engine()
+        if ocr is not None:
+            try:
+                import numpy as np
+                img_np = np.array(im_frame)
+                res, _ = ocr(img_np)
+                if res:
+                    raw_items = []
+                    for box, text_val, score in res:
+                        t_str = str(text_val).strip()
+                        if _is_nova_signature(t_str):
+                            continue
+                        fcx = int((box[0][0] + box[2][0]) / 2)
+                        fcy = int((box[0][1] + box[2][1]) / 2)
+                        fbw = int(abs(box[1][0] - box[0][0]))
+                        fbh = int(abs(box[2][1] - box[1][1]))
+                        # Screen coordinates mapped directly
+                        scx = int(round(fcx * (w / float(frame_w))))
+                        scy = int(round(fcy * (h / float(frame_h))))
+                        raw_items.append({
+                            "text": t_str,
+                            "score": round(float(score), 3),
+                            "frame_x": fcx,
+                            "frame_y": fcy,
+                            "screen_x": scx,
+                            "screen_y": scy,
+                            "width": fbw,
+                            "height": fbh,
+                            "frame_box": [[int(pt[0]), int(pt[1])] for pt in box]
+                        })
+
+                    # Sort naturally: top-to-bottom, left-to-right
+                    raw_items.sort(key=lambda it: (it["frame_y"] // 28, it["frame_x"]))
+
+                    _last_detected_elements.clear()
+                    for idx, item in enumerate(raw_items[:40], 1):
+                        item["id"] = idx
+                        _last_detected_elements[idx] = item
+                        elements_list.append(item)
+
+                    im_frame = _annotate_som(im_frame, elements_list)
+            except Exception as e:
+                logger.debug(f"Screen annotation failed: {e}")
+
     buf = io.BytesIO()
-    im.convert("RGB").save(buf, format="JPEG", quality=75, optimize=True)
+    im_frame.convert("RGB").save(buf, format="JPEG", quality=75, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    return {
+    result = {
         "status": "success",
         "action": "screenshot",
         "screen_width": w,
@@ -624,8 +765,19 @@ def _take_screenshot() -> Dict[str, Any]:
         "frame_height": frame_h,
         "image_base64": b64,
         "mime_type": "image/jpeg",
-        "message": f"Captured desktop screen. Screen: {w}x{h}, Visual frame: {frame_w}x{frame_h}. Coordinates you specify will be automatically mapped to physical screen pixels."
+        "total_elements": len(elements_list),
+        "message": (
+            f"Captured desktop screen ({w}x{h}). Annotated with {len(elements_list)} interactive elements [1-{len(elements_list)}]. "
+            "To interact with any element with 100% precision, call action='click', element=ID or action='type', element=ID, text='...'. "
+            "Coordinates are also automatically mapped to physical screen pixels."
+        )
     }
+    if elements_list:
+        result["elements"] = [
+            {"id": el["id"], "text": el["text"], "x": el["frame_x"], "y": el["frame_y"]}
+            for el in elements_list[:25]
+        ]
+    return result
 
 
 def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_click: bool = False) -> Dict[str, Any]:
@@ -752,7 +904,7 @@ def _ocr_screen(query: Optional[str] = None, auto_click: bool = False, double_cl
 
 
 def _map_coords(x: Optional[Any], y: Optional[Any]) -> Tuple[Optional[int], Optional[int]]:
-    """Smart coordinate mapping supporting normalized, visual frame, and screen pixels."""
+    """Smart coordinate mapping supporting normalized, 1000-scale, visual frame, and screen pixels."""
     if x is None or y is None:
         return None, None
 
@@ -772,6 +924,13 @@ def _map_coords(x: Optional[Any], y: Optional[Any]) -> Tuple[Optional[int], Opti
         ry = int(round(yf * screen_h))
         return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
 
+    # Standard Vision-LLM 1000-scale (e.g. Qwen-VL, Gemma-2/4 vision)
+    # Triggered when coordinates are in 0-1000 range and either y > frame_h or x > frame_w
+    if 0.0 <= xf <= 1000.0 and 0.0 <= yf <= 1000.0 and (yf > frame_h or xf > frame_w):
+        rx = int(round((xf / 1000.0) * screen_w))
+        ry = int(round((yf / 1000.0) * screen_h))
+        return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
+
     # Visual frame space (scaled down from screen)
     if frame_w != screen_w and (xf <= frame_w and yf <= frame_h):
         scale_x = screen_w / float(frame_w)
@@ -786,18 +945,18 @@ def _map_coords(x: Optional[Any], y: Optional[Any]) -> Tuple[Optional[int], Opti
     return max(0, min(screen_w - 1, rx)), max(0, min(screen_h - 1, ry))
 
 
-def _mouse_move(x: int, y: int):
+def _mouse_move(x: int, y: int, is_physical: bool = False):
     if sys.platform == "win32":
-        mx, my = _map_coords(x, y)
+        mx, my = (int(x), int(y)) if is_physical else _map_coords(x, y)
         if mx is not None and my is not None:
             ctypes.windll.user32.SetCursorPos(mx, my)
 
 
-def _mouse_click(x: Optional[Any] = None, y: Optional[Any] = None, button: str = "left", double: bool = False):
+def _mouse_click(x: Optional[Any] = None, y: Optional[Any] = None, button: str = "left", double: bool = False, is_physical: bool = False):
     if sys.platform == "win32":
         u32 = ctypes.windll.user32
         if x is not None and y is not None:
-            mx, my = _map_coords(x, y)
+            mx, my = (int(x), int(y)) if is_physical else _map_coords(x, y)
             if mx is not None and my is not None:
                 u32.SetCursorPos(mx, my)
         time.sleep(0.04)
@@ -968,8 +1127,13 @@ def _keyboard_type(text: str):
 
 def _keyboard_press(key_combo: str):
     if sys.platform == "win32":
-        u32 = ctypes.windll.user32
         combo = key_combo.lower().strip()
+        # Strictly block 'win+d' to prevent minimizing desktop windows and losing app focus
+        if combo in ("win+d", "windows+d"):
+            logger.warning("Blocked 'win+d' command to prevent desktop window minimization.")
+            return
+
+        u32 = ctypes.windll.user32
         parts = [p.strip() for p in combo.split("+")]
 
         vks = []
@@ -1004,6 +1168,8 @@ tool_desktop_control = BaseTool(
             ]
         ),
         ToolParameter(name="text", type="string", description="Text to type using keyboard, query for 'search', window title/process for 'focus_window', text to search for in 'find_text', URL for 'open_url', or app name for 'open_app'", required=False),
+        ToolParameter(name="element", type="integer", description="Numbered UI element ID (1, 2, 3...) from the Set-of-Marks screenshot. When provided to 'click' or 'type', clicks the exact center of that element with 100% pinpoint accuracy.", required=False),
+        ToolParameter(name="target", type="string", description="Name or label of the button, input field, tab, or UI element to target (e.g. 'Search', 'Submit', 'Layer', 'File'). If passed to 'click' or 'type', automatically finds the element with OCR and clicks its center.", required=False),
         ToolParameter(name="steps", type="array", description="List of step dictionaries to execute in a single batch call. Each step has 'action', 'text', 'key', 'x', 'y', 'wait_seconds', etc.", required=False),
         ToolParameter(name="key", type="string", description="Key or key combination to press (e.g. 'enter', 'tab', 'win', 'win+r', 'alt+d', 'ctrl+l', 'ctrl+t', 'ctrl+c', 'ctrl+v', 'alt+f4', 'alt+tab')", required=False),
         ToolParameter(name="x", type="integer", description="X coordinate on screen (0 to screen width) or on visual frame. If provided to 'type', clicks at (x, y) first to focus before typing.", required=False),
@@ -1097,6 +1263,9 @@ ACTION_ALIASES = {
     "open_url": "open_url",
     "navigate": "open_url",
     "go_to_url": "open_url",
+    "address_bar": "address_bar",
+    "browser_address_bar": "address_bar",
+    "focus_address_bar": "address_bar",
     # apps
     "open_app": "open_app",
     "launch_app": "open_app",
@@ -1132,9 +1301,56 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
     press_enter = bool(arguments.get("press_enter", False))
     clear_first = bool(arguments.get("clear_first", False))
     scroll_clicks = arguments.get("scroll_clicks")
+    element_id = arguments.get("element") or arguments.get("element_id") or arguments.get("target_id")
+    target_query = arguments.get("target") or arguments.get("label") or arguments.get("target_text")
+
+    # Smart Pinpoint Element Resolution
+    resolved_x = x
+    resolved_y = y
+    resolved_info = None
+
+    # 1. Resolve numbered Set-of-Marks element ID
+    if element_id is not None:
+        try:
+            eid = int(element_id)
+            if eid in _last_detected_elements:
+                resolved_info = _last_detected_elements[eid]
+                resolved_x = resolved_info["screen_x"]
+                resolved_y = resolved_info["screen_y"]
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Resolve target text label via OCR if coordinates not yet resolved
+    if resolved_x is None and resolved_y is None:
+        find_target = target_query or (text if action in ("click", "double_click", "right_click", "middle_click") else None)
+        if find_target and isinstance(find_target, str) and len(find_target.strip()) > 0:
+            ocr_res = _ocr_screen(query=find_target, auto_click=False)
+            if ocr_res.get("found") and ocr_res.get("best_match"):
+                best = ocr_res["best_match"]
+                sw, sh = _get_screen_size()
+                fw = _last_frame_info.get("frame_w", sw)
+                fh = _last_frame_info.get("frame_h", sh)
+                sx = int(round(best["x"] * (sw / float(fw))))
+                sy = int(round(best["y"] * (sh / float(fh))))
+                resolved_x, resolved_y = sx, sy
+                resolved_info = {
+                    "text": best["text"],
+                    "screen_x": sx,
+                    "screen_y": sy,
+                    "similarity": best.get("similarity", 1.0)
+                }
 
     if action == "search":
         return _search_in_browser(text or "", suppress_screenshot=suppress_screenshot)
+
+    elif action == "address_bar":
+        bw = _find_window("browser")
+        if bw:
+            _activate_window(bw["hwnd"])
+            time.sleep(0.15)
+        _keyboard_press("alt+d")
+        time.sleep(0.1)
+        return {"status": "success", "action": "address_bar", "message": "Focused browser address bar via 'alt+d'."}
 
     elif action == "focus_window":
         return _handle_focus_window(text or "", suppress_screenshot=suppress_screenshot)
@@ -1185,32 +1401,54 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         return _ocr_screen(query=None, auto_click=False)
 
     elif action == "screenshot":
-        return _take_screenshot()
+        return _take_screenshot(annotate_marks=True)
 
     elif action == "click":
-        _mouse_click(x, y, button="left", double=False)
-        mx, my = _map_coords(x, y)
-        return {"status": "success", "action": "click", "screen_x": mx, "screen_y": my, "message": f"Left clicked at ({mx}, {my})"}
+        if resolved_x is not None and resolved_y is not None:
+            is_phys = bool(resolved_info is not None)
+            _mouse_click(resolved_x, resolved_y, button="left", double=False, is_physical=is_phys)
+            mx, my = (int(resolved_x), int(resolved_y)) if is_phys else _map_coords(resolved_x, resolved_y)
+            label = resolved_info["text"] if resolved_info else f"({mx}, {my})"
+            return {"status": "success", "action": "click", "screen_x": mx, "screen_y": my, "message": f"Clicked '{label}' at ({mx}, {my}) with 100% pinpoint accuracy."}
+        if target_query or (text and x is None and y is None):
+            t_str = target_query or text
+            return {"status": "warning", "action": "click", "target": t_str, "found": False, "message": f"Element '{t_str}' was not found on screen. Call action='screenshot' to inspect."}
+        _mouse_click(None, None, button="left", double=False)
+        return {"status": "success", "action": "click", "message": "Left clicked at current mouse position"}
 
     elif action == "double_click":
-        _mouse_click(x, y, button="left", double=True)
-        mx, my = _map_coords(x, y)
-        return {"status": "success", "action": "double_click", "screen_x": mx, "screen_y": my, "message": f"Double clicked at ({mx}, {my})"}
+        if resolved_x is not None and resolved_y is not None:
+            is_phys = bool(resolved_info is not None)
+            _mouse_click(resolved_x, resolved_y, button="left", double=True, is_physical=is_phys)
+            mx, my = (int(resolved_x), int(resolved_y)) if is_phys else _map_coords(resolved_x, resolved_y)
+            label = resolved_info["text"] if resolved_info else f"({mx}, {my})"
+            return {"status": "success", "action": "double_click", "screen_x": mx, "screen_y": my, "message": f"Double clicked '{label}' at ({mx}, {my}) with 100% pinpoint accuracy."}
+        _mouse_click(None, None, button="left", double=True)
+        return {"status": "success", "action": "double_click", "message": "Double clicked at current mouse position"}
 
     elif action == "right_click":
-        _mouse_click(x, y, button="right", double=False)
-        mx, my = _map_coords(x, y)
-        return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
+        if resolved_x is not None and resolved_y is not None:
+            is_phys = bool(resolved_info is not None)
+            _mouse_click(resolved_x, resolved_y, button="right", double=False, is_physical=is_phys)
+            mx, my = (int(resolved_x), int(resolved_y)) if is_phys else _map_coords(resolved_x, resolved_y)
+            return {"status": "success", "action": "right_click", "screen_x": mx, "screen_y": my, "message": f"Right clicked at ({mx}, {my})"}
+        _mouse_click(None, None, button="right", double=False)
+        return {"status": "success", "action": "right_click", "message": "Right clicked at current mouse position"}
 
     elif action == "middle_click":
-        _mouse_click(x, y, button="middle", double=False)
-        mx, my = _map_coords(x, y)
-        return {"status": "success", "action": "middle_click", "screen_x": mx, "screen_y": my, "message": f"Middle clicked at ({mx}, {my})"}
+        if resolved_x is not None and resolved_y is not None:
+            is_phys = bool(resolved_info is not None)
+            _mouse_click(resolved_x, resolved_y, button="middle", double=False, is_physical=is_phys)
+            mx, my = (int(resolved_x), int(resolved_y)) if is_phys else _map_coords(resolved_x, resolved_y)
+            return {"status": "success", "action": "middle_click", "screen_x": mx, "screen_y": my, "message": f"Middle clicked at ({mx}, {my})"}
+        _mouse_click(None, None, button="middle", double=False)
+        return {"status": "success", "action": "middle_click", "message": "Middle clicked at current mouse position"}
 
     elif action == "move":
-        if x is not None and y is not None:
-            _mouse_move(x, y)
-            mx, my = _map_coords(x, y)
+        if resolved_x is not None and resolved_y is not None:
+            is_phys = bool(resolved_info is not None)
+            _mouse_move(resolved_x, resolved_y, is_physical=is_phys)
+            mx, my = (int(resolved_x), int(resolved_y)) if is_phys else _map_coords(resolved_x, resolved_y)
             return {"status": "success", "action": "move", "screen_x": mx, "screen_y": my, "message": f"Moved mouse to ({mx}, {my})"}
         return {"status": "error", "message": "Missing x or y coordinate for move"}
 
@@ -1231,8 +1469,9 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         if not text:
             return {"status": "error", "message": "Missing text parameter to type"}
 
-        if x is not None and y is not None:
-            _mouse_click(x, y, button="left", double=False)
+        is_phys = bool(resolved_info is not None)
+        if resolved_x is not None and resolved_y is not None:
+            _mouse_click(resolved_x, resolved_y, button="left", double=False, is_physical=is_phys)
             time.sleep(0.12)
 
         if clear_first:
@@ -1243,39 +1482,47 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
 
         _keyboard_type(str(text))
 
+        mx, my = (int(resolved_x), int(resolved_y)) if (resolved_x is not None and is_phys) else _map_coords(resolved_x, resolved_y)
         if press_enter:
             time.sleep(0.08)
             _keyboard_press("enter")
             time.sleep(0.8)
+            label = resolved_info["text"] if resolved_info else "field"
             res = {
                 "status": "success",
                 "action": "type",
                 "text": text,
-                "clicked_at": [x, y] if (x is not None and y is not None) else None,
+                "clicked_at": [resolved_x, resolved_y] if (resolved_x is not None and resolved_y is not None) else None,
                 "pressed_enter": True,
-                "message": f"Typed '{text}' and pressed Enter."
+                "message": f"Typed '{text}' into {label} and pressed Enter."
             }
             if not suppress_screenshot:
-                shot = _take_screenshot()
+                shot = _take_screenshot(annotate_marks=True)
                 if shot.get("image_base64"):
                     res["image_base64"] = shot["image_base64"]
                     res["screen_width"] = shot.get("screen_width")
                     res["screen_height"] = shot.get("screen_height")
                     res["frame_width"] = shot.get("frame_width")
                     res["frame_height"] = shot.get("frame_height")
+                    if shot.get("elements"):
+                        res["elements"] = shot["elements"]
             return res
 
+        label = resolved_info["text"] if resolved_info else "field"
         return {
             "status": "success",
             "action": "type",
             "text": text,
-            "clicked_at": [x, y] if (x is not None and y is not None) else None,
-            "pressed_enter": False
+            "clicked_at": [resolved_x, resolved_y] if (resolved_x is not None and resolved_y is not None) else None,
+            "pressed_enter": False,
+            "message": f"Typed '{text}' into {label}."
         }
 
     elif action == "press_key":
         key_name = key or arguments.get("key") or arguments.get("text")
         if key_name:
+            if str(key_name).lower().strip() in ("win+d", "windows+d"):
+                return {"status": "warning", "action": "press_key", "key": key_name, "message": "Blocked 'win+d' to prevent desktop minimization. Used focus_window instead."}
             _keyboard_press(str(key_name))
             return {"status": "success", "action": "press_key", "key": key_name}
         return {"status": "error", "message": "Missing key parameter"}

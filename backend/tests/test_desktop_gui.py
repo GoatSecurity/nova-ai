@@ -146,3 +146,51 @@ Have a great day!"""
 }
 ```"""
     assert _strip_raw_tool_calls(pure) == ""
+
+@pytest.mark.asyncio
+async def test_desktop_control_element_and_targeting():
+    from backend.app.tools.system.desktop_automation import _last_detected_elements
+
+    # Populate mock detected element
+    _last_detected_elements[99] = {
+        "id": 99,
+        "text": "SubmitOrderButton",
+        "screen_x": 350,
+        "screen_y": 450,
+        "frame_x": 180,
+        "frame_y": 240
+    }
+
+    # Test click by element ID
+    res_el_click = await tool_registry.execute_tool(
+        "desktop_control",
+        {"action": "click", "element": 99},
+        {}
+    )
+    assert res_el_click.get("status") == "success"
+    assert res_el_click.get("screen_x") == 350
+    assert res_el_click.get("screen_y") == 450
+
+    # Test type by element ID
+    res_el_type = await tool_registry.execute_tool(
+        "desktop_control",
+        {"action": "type", "element": 99, "text": "hello", "press_enter": False},
+        {}
+    )
+    assert res_el_type.get("status") == "success"
+    assert res_el_type.get("clicked_at") == [350, 450]
+
+    # Test blocking of dangerous 'win+d'
+    res_win_d = await tool_registry.execute_tool(
+        "desktop_control",
+        {"action": "press_key", "key": "win+d"},
+        {}
+    )
+    assert res_win_d.get("status") == "warning"
+    assert "win+d" in res_win_d.get("message", "")
+
+    # Test 1000-scale coordinate mapping
+    sw, sh = _get_screen_size()
+    rx, ry = _map_coords(500, 800)
+    assert rx == int(round(0.5 * sw))
+    assert ry == int(round(0.8 * sh))

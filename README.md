@@ -437,7 +437,7 @@ Current release package:
 SHA-256:
 
 ```text
-5e1dcea93994b8cd7802a089fe6ee2cf7e79c2ce234b30e310a000f87baf1d39
+3cb73e877a06ab6ce62b28fbe0345e3301b6cd9aeb61eabd895014c52cda82de
 ```
 
 #### Installation

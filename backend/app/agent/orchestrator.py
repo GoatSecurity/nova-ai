@@ -1350,28 +1350,30 @@ class AgentOrchestrator:
                     system_prompt += (
                         f"\n\n### Desktop GUI & Screen Automation Instructions:\n"
                         f"CRITICAL DIRECTIVE: You have DIRECT physical control of the user's mouse and keyboard via the `desktop_control` tool. NEVER tell the user you lack physical or graphical control of their browser or desktop, because you HAVE full control through `desktop_control`! Immediately invoke `desktop_control` whenever the user asks you to search, click, type, open browser, or interact with screen elements.\n"
-                        f"Current Screen Resolution: {scr_w}x{scr_h}. Coordinates you specify are automatically mapped to physical screen pixels.\n"
+                        f"Current Screen Resolution: {scr_w}x{scr_h}.\n"
                         f"\n"
                         f"### MANDATORY WORKFLOW DIRECTIVES FOR MAXIMUM RELIABILITY & SPEED:\n"
-                        f"1. **SEARCHING OR BROWSING THE WEB IN BROWSER**:\n"
-                        f"   Whenever the user asks to search something in their browser or Google (e.g. 'search X in my browser', 'go to google and search X', or '\u0628\u0627 \u0627\u0633\u062a\u0641\u0627\u062f\u0647 \u0627\u0632 \u0645\u0648\u0633 \u0648 \u06a9\u06cc\u0628\u0631\u062f \u0628\u0631\u0648 \u062a\u0648\u06cc\u0647 \u0645\u0631\u0648\u0631\u06af\u0631\u0645 \u0648 \u062a\u0627\u06cc\u067e \u06a9\u0646 X'):\n"
-                        f"   * **FASTEST & RECOMMENDED (1-TURN INSTANT SEARCH)**:\n"
-                        f"     Call `desktop_control(action='search', text='QUERY')` directly! This opens the user's active browser straight to the Google search results in under 1 second, brings the browser window to the foreground, and attaches a fresh screenshot. Fulfill the user's request in a single turn!\n"
-                        f"   * **IF USING STEP-BY-STEP MOUSE & KEYBOARD MACROS (BATCH)**:\n"
-                        f"     If the user specifically asks to switch to their browser, type and press Enter:\n"
-                        f"     Use `action='batch'` with `focus_window`:\n"
-                        f"     `desktop_control(action='batch', steps=[{{'action': 'focus_window', 'text': 'browser'}}, {{'action': 'wait', 'wait_seconds': 0.5}}, {{'action': 'press_key', 'key': 'alt+d'}}, {{'action': 'type', 'text': 'QUERY', 'press_enter': True}}])`\n"
+                        f"1. **SEARCHING OR BROWSING THE WEB IN BROWSER (1-TURN INSTANT COMPLETION)**:\n"
+                        f"   Whenever the user asks to search something in their browser, go to Google, or search with mouse and keyboard (e.g. 'search X in my browser', 'go to google and search X', or '\u0628\u0627 \u0627\u0633\u062a\u0641\u0627\u062f\u0647 \u0627\u0632 \u0645\u0648\u0633 \u0648 \u06a9\u06cc\u0628\u0631\u062f \u0628\u0631\u0648 \u062a\u0648\u06cc\u0647 \u0645\u0631\u0648\u0631\u06af\u0631\u0645 \u0648 \u062a\u0627\u06cc\u067e \u06a9\u0646 X'):\n"
+                        f"   * **PRIMARY & FASTEST (1-TURN INSTANT SEARCH)**:\n"
+                        f"     Call `desktop_control(action='search', text='QUERY')` directly! This opens the user's active browser straight to the Google search results in under 1 second, brings the browser window to the foreground, attaches a real screenshot of the results, and fulfills the request in ONE turn!\n"
+                        f"   * **IF USING STEP-BY-STEP KEYBOARD/MACRO**:\n"
+                        f"     Use `desktop_control(action='batch', steps=[{{'action': 'focus_window', 'text': 'browser'}}, {{'action': 'wait', 'wait_seconds': 0.3}}, {{'action': 'press_key', 'key': 'alt+d'}}, {{'action': 'wait', 'wait_seconds': 0.2}}, {{'action': 'type', 'text': 'QUERY', 'press_enter': True}}])`.\n"
+                        f"     Note: 'alt+d' is the universal Windows shortcut that highlights and focuses the browser address/search bar without any coordinate guessing!\n"
                         f"\n"
-                        f"2. **CRITICAL WARNING — NEVER PRESS 'win+d'**:\n"
-                        f"   NEVER press 'win+d' before interacting with a browser or application! 'win+d' minimizes all windows to the Windows desktop, causing keyboard typing to select or open random files or shortcuts on the desktop! To switch to any app or browser, ALWAYS use `action='focus_window', text='APP_NAME_OR_BROWSER'`.\n"
+                        f"2. **PINPOINT ACCURACY FOR CLICKING & TYPING - NEVER GUESS COORDINATES**:\n"
+                        f"   * NEVER guess random (x, y) coordinates on empty space!\n"
+                        f"   * To click ANY button, tab, menu, or text on screen: Pass `action='click', text='BUTTON_LABEL'` or `action='click', target='BUTTON_LABEL'`. The system will automatically find the exact element via OCR and click its exact center!\n"
+                        f"   * To click a numbered Set-of-Marks badge from the screenshot: Pass `action='click', element=ID` (e.g. `element=1`). This guarantees 100% pixel precision!\n"
+                        f"   * To type into an input field: Pass `action='type', target='FIELD_LABEL', text='...', press_enter=True` or `action='type', element=ID, text='...', press_enter=True`. It clicks the field to focus it first, then types!\n"
                         f"\n"
-                        f"3. **WINDOW MANAGEMENT**:\n"
+                        f"3. **CRITICAL WARNING - NEVER PRESS 'win+d'**:\n"
+                        f"   NEVER press 'win+d'! 'win+d' minimizes all windows to the Windows desktop, causing keyboard typing to select or open random files or shortcuts on the desktop! To switch to any app or browser, ALWAYS use `action='focus_window', text='APP_NAME_OR_BROWSER'`.\n"
+                        f"\n"
+                        f"4. **WINDOW MANAGEMENT**:\n"
                         f"   * To switch to an open app or browser: `desktop_control(action='focus_window', text='browser')` (or 'photoshop', 'notepad', 'firefox', 'chrome', etc.).\n"
                         f"   * To list all open desktop windows: `desktop_control(action='list_windows')`.\n"
                         f"   * To launch an app: `desktop_control(action='open_app', text='APP_NAME')`. If already open, it brings it to the front!\n"
-                        f"\n"
-                        f"4. **MULTI-STEP MACROS (BATCH)**:\n"
-                        f"   For complex workflows (e.g. Photoshop, multi-app coordination), ALWAYS use `action='batch', steps=[...]` so all actions execute in milliseconds without network delays between steps!\n"
                         f"\n"
                         f"5. **INSTANT SCREEN OCR & UI TARGETING**:\n"
                         f"   * Call `desktop_control(action='find_text', text='Button Name', click=True)` to instantly locate any button, menu, or text on screen (in Photoshop, Chrome, etc.) and click it automatically in one step!\n"
@@ -1417,7 +1419,7 @@ class AgentOrchestrator:
 
                     # If this is the active user turn and model has vision, auto-attach real-time desktop screenshot for GUI requests
                     if model_has_vision and is_last_user_msg and not image_parts:
-                        gui_keywords = ("\u0645\u0648\u0633", "\u06a9\u06cc\u0628\u0631\u062f", "\u06a9\u06cc\u0628\u0648\u0631\u062f", "\u062f\u0633\u06a9\u062a\u0627\u067e", "\u0627\u0633\u06a9\u0631\u06cc\u0646", "\u06a9\u0644\u06cc\u06a9", "\u0645\u0631\u0648\u0631\u06af\u0631", "\u0641\u062a\u0648\u0634\u0627\u067e", "\u062a\u0627\u06cc\u067e", "mouse", "keyboard", "desktop", "screen", "click", "browser", "photoshop", "gui", "google")
+                        gui_keywords = ("\u0627\u0633\u06a9\u0631\u06cc\u0646 \u0634\u0627\u062a", "\u0639\u06a9\u0633 \u0635\u0641\u062d\u0647", "\u0635\u0641\u062d\u0647 \u0631\u0648 \u0628\u0628\u06cc\u0646", "\u0631\u0648\u06cc \u0635\u0641\u062d\u0647 \u0686\u06cc\u0647", "take screenshot", "capture screen", "what is on my screen")
                         if any(kw in raw_user_content.lower() for kw in gui_keywords):
                             try:
                                 from backend.app.tools.system.desktop_automation import _take_screenshot
