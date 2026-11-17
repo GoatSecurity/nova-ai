@@ -109,7 +109,8 @@ class OllamaAdapter(BaseProviderAdapter):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        enable_thinking: Optional[bool] = None
+        enable_thinking: Optional[bool] = None,
+        conversation_id: Optional[str] = None
     ) -> AsyncGenerator[StreamChunk, None]:
         url = f"{self.base_url}/api/chat"
         converted_messages = []
@@ -160,15 +161,26 @@ class OllamaAdapter(BaseProviderAdapter):
             # Map tools to Ollama function calling format
             payload["tools"] = tools
 
+        client = self.get_shared_client()
+        resp: Optional[httpx.Response] = None
         try:
-            async with self.get_client() as client:
-                async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
+            from backend.app.agent.orchestrator import AgentOrchestrator
+            if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                return
+
+            async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
+                self.register_active_stream(conversation_id, client, resp)
+                try:
                     if resp.status_code != 200:
                         err = await resp.aread()
                         yield StreamChunk(delta_text=f"\n[Ollama error {resp.status_code}: {err.decode('utf-8', errors='replace')[:200]}]")
                         return
 
                     async for line in resp.aiter_lines():
+                        if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                            await resp.aclose()
+                            return
+
                         if not line.strip():
                             continue
                         try:
@@ -197,6 +209,20 @@ class OllamaAdapter(BaseProviderAdapter):
                             finish_reason="stop" if done else None
                         )
                         yield chunk
+                finally:
+                    self.unregister_active_stream(conversation_id)
+        except (asyncio.CancelledError, GeneratorExit):
+            self.unregister_active_stream(conversation_id)
+            if resp is not None and not resp.is_closed:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+            return
         except Exception as e:
+            self.unregister_active_stream(conversation_id)
+            from backend.app.agent.orchestrator import AgentOrchestrator
+            if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                return
             logger.error(f"Error in Ollama chat_stream: {e}")
             yield StreamChunk(delta_text=f"\n[Ollama stream error: {str(e)}]")

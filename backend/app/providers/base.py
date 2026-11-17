@@ -40,6 +40,8 @@ class BaseProviderAdapter(abc.ABC):
         self.models_endpoint = models_endpoint
         self.chat_endpoint = chat_endpoint
         self.timeout_seconds = timeout_seconds
+        self._shared_client: Optional[httpx.AsyncClient] = None
+        self._active_streams: Dict[str, Tuple[Optional[httpx.AsyncClient], Optional[httpx.Response]]] = {}
 
     def is_local_url(self) -> bool:
         return "127.0.0.1" in self.base_url or "localhost" in self.base_url or "::1" in self.base_url
@@ -52,6 +54,47 @@ class BaseProviderAdapter(abc.ABC):
         trust_env = not self.is_local_url()
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=300.0)
         return httpx.AsyncClient(timeout=to, trust_env=trust_env, limits=limits)
+
+    def get_shared_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
+        """Returns a persistent pooled AsyncClient for fast keep-alive reuse without TLS renegotiation overhead."""
+        if self._shared_client is None or self._shared_client.is_closed:
+            t = float(timeout or self.timeout_seconds)
+            to = httpx.Timeout(read=max(t, 120.0), connect=30.0, write=60.0, pool=60.0)
+            trust_env = not self.is_local_url()
+            limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=300.0)
+            self._shared_client = httpx.AsyncClient(timeout=to, trust_env=trust_env, limits=limits)
+        return self._shared_client
+
+    def register_active_stream(
+        self,
+        conversation_id: Optional[str],
+        client: Optional[httpx.AsyncClient],
+        response: Optional[httpx.Response]
+    ) -> None:
+        if conversation_id:
+            self._active_streams[conversation_id] = (client, response)
+
+    def unregister_active_stream(self, conversation_id: Optional[str]) -> None:
+        if conversation_id and conversation_id in self._active_streams:
+            self._active_streams.pop(conversation_id, None)
+
+    async def abort_stream(self, conversation_id: str) -> bool:
+        """
+        Immediately closes the active HTTP streaming response socket and transport,
+        forcing the remote model provider server to receive a connection drop/reset
+        and halt inference immediately.
+        """
+        if not conversation_id or conversation_id not in self._active_streams:
+            return False
+        client, response = self._active_streams.pop(conversation_id, (None, None))
+        aborted = False
+        try:
+            if response is not None and not response.is_closed:
+                await response.aclose()
+                aborted = True
+        except Exception:
+            pass
+        return aborted
 
     @abc.abstractmethod
     def get_capabilities(self) -> ProviderCapabilities:
@@ -75,7 +118,8 @@ class BaseProviderAdapter(abc.ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        enable_thinking: Optional[bool] = None
+        enable_thinking: Optional[bool] = None,
+        conversation_id: Optional[str] = None
     ) -> AsyncGenerator[StreamChunk, None]:
         """Streams response tokens and tool calls from the model."""
         pass

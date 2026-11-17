@@ -251,7 +251,8 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        enable_thinking: Optional[bool] = None
+        enable_thinking: Optional[bool] = None,
+        conversation_id: Optional[str] = None
     ) -> AsyncGenerator[StreamChunk, None]:
         url = f"{self.base_url}{self.chat_endpoint}"
         payload: Dict[str, Any] = {
@@ -270,20 +271,30 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
             is_openai_cloud = "api.openai.com" in self.base_url.lower()
             if not is_openai_cloud:
                 payload["chat_template_kwargs"] = {"enable_thinking": bool(enable_thinking)}
-                payload["reasoning_format"] = "auto" if enable_thinking else "deepseek"
+                payload["reasoning_format"] = "auto" if enable_thinking else "none"
                 if enable_thinking:
                     payload["reasoning_control"] = True
             if enable_thinking:
                 payload["reasoning_effort"] = "medium"
+            else:
+                payload["reasoning_effort"] = "low"
 
         headers = self._get_headers()
+        client = self.get_shared_client()
 
         for attempt in range(2):
             accumulated_tools: Dict[int, Dict[str, Any]] = {}
             received_any = False
+            response: Optional[httpx.Response] = None
             try:
-                async with self.get_client() as client:
-                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                # Fast bail out if conversation was already stopped by user
+                from backend.app.agent.orchestrator import AgentOrchestrator
+                if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                    return
+
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    self.register_active_stream(conversation_id, client, response)
+                    try:
                         if response.status_code != 200:
                             err_body = await response.aread()
                             err_text = err_body.decode('utf-8', errors='replace')
@@ -294,6 +305,10 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
                             return
 
                         async for line in response.aiter_lines():
+                            if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                                await response.aclose()
+                                return
+
                             if not line or not line.startswith("data:"):
                                 continue
                             data_str = line[5:].strip()
@@ -342,6 +357,8 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
                                 delta_thought=thought,
                                 finish_reason=finish_reason
                             )
+                    finally:
+                        self.unregister_active_stream(conversation_id)
 
                 if accumulated_tools:
                     parsed_tools = []
@@ -354,7 +371,21 @@ class OpenAICompatibleAdapter(BaseProviderAdapter):
                     yield StreamChunk(tool_calls=parsed_tools, finish_reason="tool_calls")
                 break
 
+            except (asyncio.CancelledError, GeneratorExit):
+                self.unregister_active_stream(conversation_id)
+                if response is not None and not response.is_closed:
+                    try:
+                        await response.aclose()
+                    except Exception:
+                        pass
+                return
+
             except Exception as e:
+                self.unregister_active_stream(conversation_id)
+                from backend.app.agent.orchestrator import AgentOrchestrator
+                if conversation_id and conversation_id in getattr(AgentOrchestrator, "_cancelled_convs", set()):
+                    return
+
                 if accumulated_tools:
                     parsed_tools = []
                     for _, tc_data in sorted(accumulated_tools.items()):

@@ -637,6 +637,55 @@ def _is_pure_chitchat(text: str) -> bool:
     return bool(re.match(pattern, clean, re.IGNORECASE))
 
 
+def _needs_desktop_instructions(prompt: str) -> bool:
+    """Checks if the user prompt involves desktop GUI, mouse, keyboard, or window automation."""
+    if not prompt:
+        return False
+    en_pattern = r"\b(mouse|keyboard|desktop|screen|screenshot|window|click|type\s+in|open\s+(?:app|browser|chrome|firefox|edge|notepad|calc)|launch)\b"
+    if re.search(en_pattern, prompt, re.IGNORECASE):
+        return True
+    fa_pattern = r"(\u0645\u0648\u0633|\u06a9\u06cc\u0628\u0631\u062f|\u06a9\u0644\u06cc\u06a9|\u0645\u0631\u0648\u0631\u06af\u0631|\u067e\u0646\u062c\u0631\u0647|\u0627\u0633\u06a9\u0631\u06cc\u0646|\u062f\u0633\u06a9\u062a\u0627\u067e|\u062a\u0627\u06cc\u067e|\u0628\u0631\u0646\u0627\u0645\u0647.*?\u0628\u0627\u0632|\u0628\u0627\u0632\s*\u06a9\u0646)"
+    return bool(re.search(fa_pattern, prompt, re.IGNORECASE))
+
+
+def _needs_tools(prompt: str, skill_cmd: Optional[str] = None, iteration: int = 0) -> bool:
+    """
+    Intelligently determines whether tool schemas are required for this turn.
+    Pure conversational queries, coding in chat, math, translations, and explanations
+    bypass tool schemas completely to give instantaneous first-token latency (< 200 ms).
+    """
+    if iteration > 0:
+        return True
+    if skill_cmd:
+        return True
+    if not prompt:
+        return False
+
+    # 1. Desktop GUI automation
+    if _needs_desktop_instructions(prompt):
+        return True
+
+    # 2. Web search / internet lookup / RSS
+    en_search = r"\b(search|google|web|browse|look\s*up|internet|weather|latest\s*news|stock\s*price|who\s*is\s*current|today\'s)\b"
+    fa_search = r"(\u0633\u0631\u0686|\u062c\u0633\u062a\u062c\u0648|\u06af\u0648\u06af\u0644|\u0627\u06cc\u0646\u062a\u0631\u0646\u062a|\u0622\u0628\s*\u0648\s*\u0647\u0648\u0627|\u0627\u062e\u0628\u0627\u0631|\u0641\u06cc\u062f|rss|feed)"
+    if re.search(en_search, prompt, re.IGNORECASE) or re.search(fa_search, prompt, re.IGNORECASE):
+        return True
+
+    # 3. Terminal & Command execution
+    en_terminal = r"\b(run|execute|terminal|powershell|cmd|bash|pip\s+install|npm\s+install|git\s+|docker\s+)\b"
+    fa_terminal = r"(\u062a\u0631\u0645\u06cc\u0646\u0627\u0644|\u062f\u0633\u062a\u0648\u0631|\u06a9\u0627\u0645\u0646\u062f|\u0627\u062c\u0631\u0627\s*\u06a9\u0646|\u0646\u0635\u0628\s*\u06a9\u0646)"
+    if re.search(en_terminal, prompt, re.IGNORECASE) or re.search(fa_terminal, prompt, re.IGNORECASE):
+        return True
+
+    # 4. Filesystem operations
+    en_file = r"\b(read\s+file|write\s+file|create\s+file|save\s+to\s+file|delete\s+file|list\s+dir|directory|folder)\b"
+    fa_file = r"(\u0641\u0627\u06cc\u0644|\u067e\u0648\u0634\u0647|\u062f\u0627\u06cc\u0631\u06a9\u062a\u0648\u0631\u06cc|\u0630\u062e\u06cc\u0631\u0647\s*\u06a9\u0646|\u062d\u0630\u0641\s*\u06a9\u0646)"
+    if re.search(en_file, prompt, re.IGNORECASE) or re.search(fa_file, prompt, re.IGNORECASE):
+        return True
+
+    return False
+
+
 def _summarize_action_for_user(tc_name: str, args: Dict[str, Any]) -> str:
     """Returns a concise, human-readable action label for live reporting in the UI."""
     if tc_name == "web_search":
@@ -699,31 +748,37 @@ class AgentOrchestrator:
     _cancelled_convs = set()
 
     _active_turns = set()
-
     _active_tasks: Dict[str, asyncio.Task] = {}
-
-
+    _active_adapters: Dict[str, Any] = {}
 
     @classmethod
-
     def cancel_turn(cls, conversation_id: str):
-
         """Signals active orchestrator turns for this conversation to stop immediately."""
-
         cls._cancelled_convs.add(conversation_id)
-
+        adapter = cls._active_adapters.pop(conversation_id, None)
+        if adapter:
+            try:
+                # Trigger stream abort immediately in the event loop so remote server halts inference
+                asyncio.create_task(adapter.abort_stream(conversation_id))
+            except Exception as e:
+                logger.debug(f"Error aborting provider stream: {e}")
         task = cls._active_tasks.get(conversation_id)
-
         if task and not task.done():
-
             task.cancel()
-
         cls._active_turns.discard(conversation_id)
 
-
+    @classmethod
+    async def abort_turn_stream(cls, conversation_id: str):
+        """Explicitly awaits aborting the active HTTP socket stream to the remote provider server."""
+        cls._cancelled_convs.add(conversation_id)
+        adapter = cls._active_adapters.pop(conversation_id, None)
+        if adapter:
+            try:
+                await adapter.abort_stream(conversation_id)
+            except Exception as e:
+                logger.debug(f"Error aborting provider stream: {e}")
 
     @classmethod
-
     def is_turn_active(cls, conversation_id: str) -> bool:
 
         """Returns True if the orchestrator is currently executing a turn for this conversation."""
@@ -790,8 +845,8 @@ class AgentOrchestrator:
 
                 max_tokens=60,
 
-                enable_thinking=False
-
+                enable_thinking=False,
+                conversation_id=f"title_{conversation_id}"
             ):
 
                 if chunk.delta_text:
@@ -975,6 +1030,8 @@ class AgentOrchestrator:
                 ))
 
                 return {"error": err_msg}
+
+            cls._active_adapters[conversation_id] = adapter
 
 
 
@@ -1410,7 +1467,8 @@ class AgentOrchestrator:
 
 
 
-                if model_has_vision and "Desktop GUI & Screen Automation Instructions" not in system_prompt:
+                needs_gui_instructions = model_has_vision and (iteration > 0 or _needs_desktop_instructions(clean_user_prompt if 'clean_user_prompt' in locals() else ""))
+                if needs_gui_instructions and "Desktop GUI & Screen Automation Instructions" not in system_prompt:
                     from backend.app.tools.system.desktop_automation import _get_screen_size
                     scr_w, scr_h = _get_screen_size()
                     system_prompt += (
@@ -1603,9 +1661,11 @@ class AgentOrchestrator:
 
                 # Prepare tool definitions (disabled if breaking a repetitive loop)
 
-                # Speed Optimization: Pure greetings / chitchat bypass 5,000 tokens of tool schemas entirely
-                is_pure_greeting = _is_pure_chitchat(clean_user_prompt) if ('clean_user_prompt' in locals() and clean_user_prompt) else False
-                if is_pure_greeting and iteration == 0 and not force_text_next:
+                # Speed & Token Optimization: Determine if tool schemas are needed
+                prompt_for_routing = clean_user_prompt if ('clean_user_prompt' in locals() and clean_user_prompt) else ""
+                req_needs_tools = _needs_tools(prompt_for_routing, skill_cmd, iteration)
+
+                if (not req_needs_tools or force_text_next) and iteration == 0:
                     available_tools = None
                 else:
                     available_tools = None if force_text_next else tool_registry.get_openai_tools()
@@ -1618,7 +1678,7 @@ class AgentOrchestrator:
                         # Prune RSS tools if the prompt does not mention news/RSS/feeds
                         needs_rss = bool(
                             skill_cmd == "/rss" or
-                            ('clean_user_prompt' in locals() and clean_user_prompt and re.search(r"(rss|feed|news|\u062e\u0628\u0631|\u0627\u062e\u0628\u0627\u0631|\u0641\u06cc\u062f)", clean_user_prompt, re.IGNORECASE))
+                            (prompt_for_routing and re.search(r"(rss|feed|news|\u062e\u0628\u0631|\u0627\u062e\u0628\u0627\u0631|\u0641\u06cc\u062f)", prompt_for_routing, re.IGNORECASE))
                         )
                         if not needs_rss:
                             available_tools = [t for t in available_tools if not t.get("function", {}).get("name", "").startswith(("list_rss", "get_rss", "fetch_rss"))]
@@ -1626,42 +1686,31 @@ class AgentOrchestrator:
                         has_unified_cmd = any(t.get("function", {}).get("name") == "execute_command" for t in available_tools)
                         if has_unified_cmd:
                             available_tools = [t for t in available_tools if t.get("function", {}).get("name") not in ("execute_powershell", "execute_cmd")]
+                        # Speed optimization: prune rarely-needed duplicate inspection tools unless explicitly asked
+                        has_system_query = bool(re.search(r"(process|ram|cpu|disk|service|network|\u067e\u0631\u0648\u0633\u0633|\u0633\u06cc\u0633\u062a\u0645|\u0631\u0645|\u062f\u06cc\u0633\u06a9|\u0634\u0628\u06a9\u0647)", prompt_for_routing, re.IGNORECASE))
+                        if not has_system_query:
+                            available_tools = [t for t in available_tools if not t.get("function", {}).get("name", "").startswith(("inspect_", "get_os_", "get_system_", "get_running_"))]
                 force_text_next = False
 
 
 
                 # Stream from model
-
                 current_turn_text = ""
-
                 current_turn_thought = ""
-
                 tool_calls_to_execute: List[Dict[str, Any]] = []
-
                 emitted_visible_len = 0
-
                 emitted_inline_think_len = 0
 
-
-
                 stream_token_count = 0
-
                 last_stream_save = time.time()
-
                 executed_screenshot_b64 = None
 
-
-
                 async for chunk in adapter.chat_stream(
-
                     model=model_name or "default",
-
                     messages=context_messages,
-
                     tools=available_tools,
-
-                    enable_thinking=enable_thinking
-
+                    enable_thinking=enable_thinking,
+                    conversation_id=conversation_id
                 ):
 
                     if conversation_id in cls._cancelled_convs:
@@ -1759,8 +1808,7 @@ class AgentOrchestrator:
                         # Incremental real-time persistence so page refresh or navigation never loses text
 
                         now_ts = time.time()
-
-                        if (stream_token_count % 10 == 0 or (now_ts - last_stream_save) >= 1.0) and asst_msg_id:
+                        if ((now_ts - last_stream_save) >= 1.5 or stream_token_count % 80 == 0) and asst_msg_id:
 
                             last_stream_save = now_ts
 
@@ -2509,8 +2557,8 @@ class AgentOrchestrator:
 
                         tools=None,
 
-                        enable_thinking=False
-
+                        enable_thinking=False,
+                        conversation_id=conversation_id
                     ):
 
                         if conversation_id in cls._cancelled_convs:
@@ -2714,10 +2762,8 @@ class AgentOrchestrator:
             return {"status": "cancelled", "conversation_id": conversation_id}
 
         finally:
-
+            cls._active_adapters.pop(conversation_id, None)
             cls._active_turns.discard(conversation_id)
-
             cls._cancelled_convs.discard(conversation_id)
-
             cls._active_tasks.pop(conversation_id, None)
 
