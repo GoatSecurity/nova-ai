@@ -683,6 +683,23 @@ def _needs_tools(prompt: str, skill_cmd: Optional[str] = None, iteration: int = 
     if re.search(en_file, prompt, re.IGNORECASE) or re.search(fa_file, prompt, re.IGNORECASE):
         return True
 
+    # 5. Autonomous Continuation / Resume requests
+    en_continue = r"\b(continue|proceed|next|resume|go\s*on|keep\s*going|finish|complete)\b"
+    fa_continue = r"(\u0627\u062f\u0627\u0645\u0647|\u0628\u0639\u062f\u06cc|\u0628\u0631\u0648\s*\u062c\u0644\u0648|\u062a\u06a9\u0645\u06cc\u0644\s*\u06a9\u0646|\u06a9\u0627\u0645\u0644\s*\u06a9\u0646)"
+    if re.search(en_continue, prompt, re.IGNORECASE) or re.search(fa_continue, prompt, re.IGNORECASE):
+        return True
+
+    # 6. Project, Code, Application review, debugging, inspection & testing
+    en_inspect = r"\b(inspect|review|examine|analyze|audit|debug|troubleshoot|fix\s+bug|run\s+test|test\s+code|codebase|repository|repo)\b"
+    fa_inspect = r"(\u0628\u0631\u0631\u0633\u06cc|\u0686\u06a9\s*\u06a9\u0646|\u0686\u06a9\u0634\s*\u06a9\u0646|\u0622\u0646\u0627\u0644\u06cc\u0632|\u062a\u062d\u0644\u06cc\u0644|\u062f\u06cc\u0628\u0627\u06af|\u0639\u06cc\u0628\u200c\u06cc\u0627\u0628\u06cc|\u067e\u0631\u0648\u0698\u0647|\u0633\u0648\u0631\u0633|\u0627\u067e\u0644\u06cc\u06a9\u06cc\u0634\u0646|\u0646\u0631\u0645\s*\u0627\u0641\u0632\u0627\u0631)"
+    if re.search(en_inspect, prompt, re.IGNORECASE) or re.search(fa_inspect, prompt, re.IGNORECASE):
+        return True
+
+    # 7. File paths or project directories
+    path_pattern = r"([a-zA-Z]:[\\/]|(?:\.\.?[\\/])|/(?:Users|home|var|tmp|etc|opt|usr|app)|(?:\.(?:py|js|ts|json|html|css|yaml|yml|sh|bat|ps1|md|txt|exe))\b)"
+    if re.search(path_pattern, prompt, re.IGNORECASE):
+        return True
+
     return False
 
 
@@ -733,6 +750,82 @@ def _summarize_action_for_user(tc_name: str, args: Dict[str, Any]) -> str:
     elif tc_name.startswith("fetch_rss"):
         return "Fetching live RSS feeds..."
     return f"Running {tc_name}..."
+
+
+def _is_premature_halt(clean_text: str, user_prompt: str, iteration: int) -> bool:
+    """
+    Detects whether the assistant output is a premature pause, an intermediate
+    status update, or a question asking the user for confirmation to continue,
+    rather than a finished autonomous answer.
+    """
+    if not clean_text or iteration == 0:
+        return False
+
+    t = clean_text.strip().lower()
+
+    # English confirmation or premature pause patterns
+    en_patterns = (
+        r"\b(should i|would you like me to|would you like to|shall i proceed|shall i continue|"
+        r"let me know if you would like|let me know if you want|do you want me to|do you wish me to|"
+        r"if you would like me to|if you want me to proceed|if you'd like me to|"
+        r"in the next step|which file would you like|please let me know if|"
+        r"before proceeding|before i proceed|ready to proceed)\b"
+    )
+    if re.search(en_patterns, t, re.IGNORECASE):
+        return True
+
+    # Persian confirmation or premature pause patterns (escaped with \uXXXX)
+    fa_patterns = (
+        r"(\u0622\u06cc\u0627\s*(?:\u0645\u0627\u06cc\u0644\u06cc\u062f|\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u06cc\u062f|\u0628\u062e\u0648\u0627\u0647\u06cc\u062f|\u0627\u062f\u0627\u0645\u0647)|"
+        r"\u062f\u0631\s*\u0635\u0648\u0631\u062a\s*\u062a\u0645\u0627\u06cc\u0644|"
+        r"\u0628\u0631\u0627\u06cc\s*\u0627\u062f\u0627\u0645\u0647|"
+        r"\u0627\u06af\u0631\s*(?:\u0645\u0627\u06cc\u0644\u06cc\u062f|\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u06cc\u062f|\u0645\u0648\u0627\u0641\u0642\u06cc\u062f)|"
+        r"\u0628\u0641\u0631\u0645\u0627\u06cc\u06cc\u062f\s*\u062a\u0627|"
+        r"\u062f\u0631\s*(?:\u0645\u0631\u062d\u0644\u0647|\u06af\u0627\u0645)\s*\u0628\u0639\u062f|"
+        r"\u06a9\u062f\u0627\u0645\s*(?:\u0641\u0627\u06cc\u0644|\u0628\u062e\u0634)|"
+        r"\u0627\u0637\u0644\u0627\u0639\s*\u062f\u0647\u06cc\u062f\s*\u062a\u0627|"
+        r"\u0628\u06af\u06cc\u062f\s*\u062a\u0627|"
+        r"\u0645\u06cc\u200c\u062a\u0648\u0627\u0646\u0645\s*(?:\u062f\u0631\s*\u0627\u062f\u0627\u0645\u0647|\u0628\u0631\u0631\u0633\u06cc))"
+    )
+    if re.search(fa_patterns, t, re.IGNORECASE):
+        return True
+
+    # Multi-step task halfway halt detection (iterations 1 or 2)
+    if iteration <= 2 and user_prompt:
+        up = user_prompt.lower()
+        # Case A: User asked to inspect/review an application or codebase, but model only gave a preliminary file list
+        has_inspect_goal = bool(re.search(
+            r"(\b(inspect|review|examine|analyze|audit|debug|codebase|app|application|project)\b|"
+            r"(\u0628\u0631\u0631\u0633\u06cc|\u0686\u06a9|\u0622\u0646\u0627\u0644\u06cc\u0632|\u062a\u062d\u0644\u06cc\u0644|\u062f\u06cc\u0628\u0627\u06af|\u067e\u0631\u0648\u0698\u0647|\u0627\u067e\u0644\u06cc\u06a9\u06cc\u0634\u0646|\u0628\u0631\u0646\u0627\u0645\u0647|\u0633\u0648\u0631\u0633))",
+            up,
+            re.IGNORECASE
+        ))
+        is_just_file_list = bool(re.search(
+            r"(\b(here is the list of files|files in the directory|directory contains|i found the following files)\b|"
+            r"(\u0641\u0627\u06cc\u0644\u200c\u0647\u0627\u06cc\s*\u067e\u0631\u0648\u0698\u0647|\u0644\u06cc\u0633\u062a\s*\u0641\u0627\u06cc\u0644|\u0645\u062d\u062a\u0648\u06cc\u0627\u062a\s*\u067e\u0648\u0634\u0647|\u067e\u0648\u0634\u0647\s*\u0634\u0627\u0645\u0644))",
+            t,
+            re.IGNORECASE
+        ))
+        if has_inspect_goal and is_just_file_list:
+            return True
+
+        # Case B: User asked to search or type in browser, but model only opened the URL and stopped
+        has_desktop_action = bool(re.search(
+            r"(\b(search|type|click|write|press|enter)\b|"
+            r"(\u0633\u0631\u0686|\u0628\u0646\u0648\u06cc\u0633|\u062a\u0627\u06cc\u067e|\u06a9\u0644\u06cc\u06a9|\u0627\u06cc\u0646\u062a\u0631))",
+            up,
+            re.IGNORECASE
+        ))
+        is_just_opened = bool(re.search(
+            r"(\b(opened browser|launched browser|opened url|launched application)\b|"
+            r"(\u0645\u0631\u0648\u0631\u06af\u0631\s*\u0628\u0627\u0632\s*\u0634\u062f|\u0622\u062f\u0631\u0633\s*\u0628\u0627\u0632\s*\u0634\u062f|\u0648\u0627\u0631\u062f\s*\u0633\u0627\u06cc\u062a\s*\u0634\u062f\u0645))",
+            t,
+            re.IGNORECASE
+        ))
+        if has_desktop_action and is_just_opened:
+            return True
+
+    return False
 
 
 class AgentOrchestrator:
@@ -1369,7 +1462,7 @@ class AgentOrchestrator:
 
             iteration = 0
 
-            max_iterations = min(settings.MAX_AGENT_ITERATIONS, 25)
+            max_iterations = settings.MAX_AGENT_ITERATIONS
 
             stream_recovery_retries = 0
 
@@ -1689,7 +1782,12 @@ class AgentOrchestrator:
                         # Speed optimization: prune rarely-needed duplicate inspection tools unless explicitly asked
                         has_system_query = bool(re.search(r"(process|ram|cpu|disk|service|network|\u067e\u0631\u0648\u0633\u0633|\u0633\u06cc\u0633\u062a\u0645|\u0631\u0645|\u062f\u06cc\u0633\u06a9|\u0634\u0628\u06a9\u0647)", prompt_for_routing, re.IGNORECASE))
                         if not has_system_query:
-                            available_tools = [t for t in available_tools if not t.get("function", {}).get("name", "").startswith(("inspect_", "get_os_", "get_system_", "get_running_"))]
+                            SYSTEM_DIAG_PREFIXES = (
+                                "inspect_services", "inspect_disk_usage", "inspect_memory_usage",
+                                "inspect_network_configuration", "inspect_environment",
+                                "get_os_", "get_system_", "get_running_"
+                            )
+                            available_tools = [t for t in available_tools if not t.get("function", {}).get("name", "").startswith(SYSTEM_DIAG_PREFIXES)]
                 force_text_next = False
 
 
@@ -2026,9 +2124,26 @@ class AgentOrchestrator:
 
 
 
-                # If NO tool calls were requested, this is the final answer!
-
+                # If NO tool calls were requested in this iteration
                 if not tool_calls_to_execute:
+                    # Autonomous Premature Halt Recovery: Check if the model paused prematurely to ask permission
+                    # or gave an intermediate status update while multi-step tasks are still in progress.
+                    if iteration > 0 and iteration < (max_iterations - 2) and _is_premature_halt(clean_assistant_text, user_prompt, iteration):
+                        logger.info(f"Detected premature pause at iteration {iteration}. Directing model to continue autonomously.")
+                        if clean_assistant_text:
+                            cumulative_assistant_text += clean_assistant_text + "\n\n"
+                            in_turn_messages.append({"role": "assistant", "content": clean_assistant_text})
+                        in_turn_messages.append({
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM DIRECTIVE - DO NOT STOP - PROCEED AUTONOMOUSLY]\n"
+                                "You are fully authorized to complete this entire task end-to-end without asking for permission "
+                                "or stopping for intermediate confirmation. Do not ask the user if you should continue. "
+                                "Immediately execute the next required tool call now to advance and finish the objective."
+                            )
+                        })
+                        iteration += 1
+                        continue
 
                     if cumulative_assistant_text.strip() and clean_assistant_text:
 
@@ -2451,11 +2566,15 @@ class AgentOrchestrator:
 
 
                 # Append tool results into in-memory context (without polluting the DB!)
-
                 if tool_results_feedback:
-
                     feedback_prompt = "\n\n".join(tool_results_feedback)
-
+                    feedback_prompt += (
+                        "\n\n[AUTONOMOUS DIRECTIVE]\n"
+                        "Inspect the tool results above. If the overall objective is NOT fully achieved yet "
+                        "(more files need reading, deeper inspection is needed, code needs analysis/fixing, commands need running, "
+                        "or browser/desktop actions need completing), IMMEDIATELY invoke the next tool call now. "
+                        "DO NOT stop to ask permission or output a partial status update. Proceed autonomously until the entire task is done."
+                    )
                     in_turn_messages.append({"role": "user", "content": f"[TOOL EXECUTION FEEDBACK]\n{feedback_prompt}"})
 
 

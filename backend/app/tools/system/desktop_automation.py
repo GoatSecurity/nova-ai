@@ -1527,7 +1527,7 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
             return {"status": "success", "action": "press_key", "key": key_name}
         return {"status": "error", "message": "Missing key parameter"}
 
-    elif action == "wait":
+    elif action in ("wait", "wait_seconds", "sleep", "delay", "pause"):
         raw_dur = (
             arguments.get("wait_seconds")
             or arguments.get("seconds")
@@ -1540,7 +1540,7 @@ async def _execute_single_action(arguments: Dict[str, Any], suppress_screenshot:
         except (ValueError, TypeError):
             sec = 0.5
         time.sleep(sec)
-        return {"status": "success", "action": "wait", "seconds": sec}
+        return {"status": "success", "action": "wait", "seconds": sec, "message": f"Waited {sec} seconds."}
 
     else:
         return {"status": "error", "message": f"Unknown action '{raw_action}'"}
