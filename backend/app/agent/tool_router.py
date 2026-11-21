@@ -145,6 +145,26 @@ class ToolRouter:
                         "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
                     })
 
+        # 4. Truncated / interrupted tool block auto-repair
+        if not tool_calls:
+            m_unclosed = re.search(r'(?:```(?:json)?\s*)?(\{?\s*"(?:tool_call|function_call|action|name)"[\s\S]+)$', text, re.IGNORECASE)
+            if m_unclosed:
+                candidate = m_unclosed.group(1).rstrip()
+                if not candidate.startswith('{'):
+                    candidate = '{' + candidate
+                for suffix in ['"}}', '"}}}', '\'\\n"}}', '\'\\n"}}}', '\\n"}}', '\\n"}}}', '}}}', '}}']:
+                    repaired_data = _safe_parse_json(candidate + suffix)
+                    if repaired_data:
+                        name, args = ToolRouter._extract_name_and_args(repaired_data, registered_tools)
+                        if name:
+                            tool_calls.append({
+                                "id": f"fallback_{str(uuid.uuid4())[:8]}",
+                                "name": name,
+                                "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+                            })
+                            logger.info(f"Successfully repaired and extracted interrupted tool call: {name}")
+                            break
+
         return tool_calls
 
     @staticmethod

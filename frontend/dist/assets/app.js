@@ -225,6 +225,8 @@
     turnStartTime: null,
     thoughtStartTime: null,
     thoughtDurationSec: null,
+    currentTurnSteps: [],
+    showLiveThought: false,
 
 
 
@@ -2714,6 +2716,18 @@ function getActiveModel() {
     if (event_type === 'token') {
       state.isStreaming = true;
       state.isAgentRunning = true;
+      if (state.streamingThought && state.streamingThought.trim()) {
+        const thoughtDur = state.thoughtStartTime ? Math.max(1, Math.round((Date.now() - state.thoughtStartTime) / 1000)) : (state.thoughtDurationSec || 1);
+        if (!state.currentTurnSteps) state.currentTurnSteps = [];
+        state.currentTurnSteps.push({
+          id: 'thought_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          type: 'thought',
+          durationSec: thoughtDur,
+          content: state.streamingThought
+        });
+        state.streamingThought = '';
+        state.thoughtStartTime = null;
+      }
       if (state.thoughtStartTime && !state.thoughtDurationSec) {
         state.thoughtDurationSec = Math.max(1, Math.round((Date.now() - state.thoughtStartTime) / 1000));
       }
@@ -2745,15 +2759,42 @@ function getActiveModel() {
     } else if (event_type === 'heartbeat') {
       state.isStreaming = true;
       state.isAgentRunning = true;
+      if (data && (data.description || data.message)) {
+        state.liveStatusText = data.description || data.message;
+        updateStreamingDOM();
+      }
     } else if (event_type === 'tool_call_start') {
       state.isStreaming = true;
       state.isAgentRunning = true;
+      if (state.streamingThought && state.streamingThought.trim()) {
+        const thoughtDur = state.thoughtStartTime ? Math.max(1, Math.round((Date.now() - state.thoughtStartTime) / 1000)) : 1;
+        if (!state.currentTurnSteps) state.currentTurnSteps = [];
+        state.currentTurnSteps.push({
+          id: 'thought_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          type: 'thought',
+          durationSec: thoughtDur,
+          content: state.streamingThought
+        });
+        state.streamingThought = '';
+        state.thoughtStartTime = null;
+      }
       const tcId = (data && data.tool_call_id) || ('tc_' + Date.now());
       const desc = (data && data.description) || getToolCallDescription(data.tool_name, data.arguments);
       state.liveStatusText = desc;
       
+      if (!state.currentTurnSteps) state.currentTurnSteps = [];
+      state.currentTurnSteps.push({
+        id: tcId,
+        type: 'tool',
+        tool_name: data.tool_name,
+        arguments: data.arguments,
+        description: desc,
+        status: 'running',
+        created_at: new Date().toISOString()
+      });
+
       if (!state.expandedToolDetails) state.expandedToolDetails = {};
-      state.expandedToolDetails[tcId] = true;
+      state.expandedToolDetails[tcId] = false;
       
       if (!state.expandedWorkedSections) state.expandedWorkedSections = {};
       state.expandedWorkedSections[tcId] = true;
@@ -2765,16 +2806,27 @@ function getActiveModel() {
         content: `[TOOL_INVOKED] ${data.tool_name}`,
         toolData: data
       });
+      updateStreamingDOM();
       render();
       scrollToBottom(true);
     } else if (event_type === 'tool_call_result') {
       state.liveStatusText = 'Analyzing results & responding...';
+      if (state.currentTurnSteps) {
+        const step = state.currentTurnSteps.find(s => s.id === data.tool_call_id);
+        if (step) {
+          step.status = 'completed';
+          step.result = data.result;
+          step.duration_ms = data.duration_ms;
+          step.diff_stats = data.diff_stats;
+        }
+      }
       for (let i = state.messages.length - 1; i >= 0; i--) {
         if (state.messages[i].toolData && state.messages[i].toolData.tool_call_id === data.tool_call_id) {
           state.messages[i].toolResult = data.result;
           break;
         }
       }
+      updateStreamingDOM();
       render();
       scrollToBottom();
     } else if (event_type === 'approval_required') {
@@ -2804,6 +2856,7 @@ function getActiveModel() {
       state.liveStatusText = '';
       state.turnStartTime = null;
       state.thoughtStartTime = null;
+      state.currentTurnSteps = [];
       state.streamingContent = '';
       state.streamingThought = '';
       refreshMessages();
@@ -4014,6 +4067,8 @@ function getActiveModel() {
     state.turnStartTime = Date.now();
     state.thoughtStartTime = null;
     state.thoughtDurationSec = null;
+    state.currentTurnSteps = [];
+    state.showLiveThought = false;
     state.liveStatusText = 'Thinking...';
     state.isAgentRunning = true;
     state.isStreaming = true;
@@ -6373,251 +6428,107 @@ function getActiveModel() {
 
 
   function renderAntigravityStep(msg) {
-
     const { toolData, toolResult } = msg;
-
     const tcName = (toolData && toolData.tool_name) || 'execute';
-
     const isCompleted = toolResult && toolResult.exit_code === 0;
-
     const isError = toolResult && toolResult.exit_code !== null && toolResult.exit_code !== undefined && toolResult.exit_code !== 0;
-
     const isWaitingApproval = msg.toolStatus === 'waiting_approval';
-
     const isRejected = msg.toolStatus === 'rejected';
-
     const isRunning = !toolResult && msg.toolStatus !== 'cancelled' && !isWaitingApproval && !isRejected && state.isStreaming;
-
     const stepId = (toolData && toolData.tool_call_id) || msg.id;
-
     const isExpanded = state.expandedToolDetails && state.expandedToolDetails[stepId];
-
     const args = (toolData && toolData.arguments) || {};
-
-
+    const diff = (toolResult && toolResult.diff_stats) || {};
 
     let stepLabel = '';
-
-    let badgeClass = 'text-zinc-300';
-
     let cmdLine = '';
 
-
-
-    // Determine clean label and command line for terminal prompt
-
-    if (args.toolSummary || args.summary) {
-
-      stepLabel = `Ran ${escapeHtml(args.toolSummary || args.summary)}`;
-
-    } else if (tcName.includes('cmd') || tcName.includes('command') || tcName.includes('powershell')) {
-
-      const rawCmd = args.CommandLine || args.command || '';
-
-      const cmdShort = rawCmd.length > 50 ? rawCmd.slice(0, 47) + '...' : rawCmd;
-
-      stepLabel = `Ran ${escapeHtml(cmdShort || 'command')}`;
-
-      if (isError) badgeClass = 'text-rose-400';
-
-    } else if (tcName === 'list_directory') {
-
-      const p = args.path || '.';
-
-      const dirName = p.replace(/\\/g, '/').split('/').filter(Boolean).pop() || p;
-
-      stepLabel = `Ran list ${escapeHtml(dirName)}`;
-
-    } else if (tcName === 'read_file') {
-
-      const p = (args.path || '').replace(/\\/g, '/');
-
+    if (tcName === 'edit_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
       const f = p.split('/').pop() || 'file';
-
-      stepLabel = `Analyzed <span class="hover:underline text-cyan-400 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">📄 ${escapeHtml(f)}</span>`;
-
-      badgeClass = 'text-cyan-400';
-
-    } else if (tcName === 'write_file' || tcName === 'create_file' || tcName === 'edit_file') {
-
-      const p = (args.path || '').replace(/\\/g, '/');
-
-      const f = p.split('/').pop() || 'file';
-
-      stepLabel = `Edited <span class="hover:underline text-emerald-400 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">📄 ${escapeHtml(f)}</span>`;
-
-      badgeClass = 'text-emerald-400';
-
-    } else if (tcName === 'run_python' && args.script_path) {
-
-      const p = (args.script_path || '').replace(/\\/g, '/');
-
-      const f = p.split('/').pop() || p;
-
-      stepLabel = `Ran python <span class="hover:underline text-emerald-400 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">📄 ${escapeHtml(f)}</span>`;
-
-    } else if (tcName === 'web_search') {
-
-      stepLabel = `Ran web_search "${escapeHtml(args.query || '')}"`;
-
-    } else if (tcName === 'list_rss_categories') {
-
-      stepLabel = `Browsed RSS Directory Tree${args.filter ? ` ("${escapeHtml(args.filter)}")` : ''}`;
-
-      badgeClass = 'text-orange-400';
-
-    } else if (tcName === 'get_rss_category_feeds') {
-
-      stepLabel = `Explored RSS Category: ${escapeHtml(args.category || '')}`;
-
-      badgeClass = 'text-orange-400';
-
-    } else if (tcName === 'fetch_rss_feed') {
-
-      const targetLabel = args.category || (args.url ? args.url.replace(/^https?:\/\//, '').slice(0, 38) : 'feed');
-
-      stepLabel = `Fetched RSS: ${escapeHtml(targetLabel)}${args.query ? ` ("${escapeHtml(args.query)}")` : ''}`;
-
-      badgeClass = 'text-orange-400';
-
-    } else {
-
-      stepLabel = `Ran ${escapeHtml(tcName)}`;
-
-    }
-
-
-
-    // Determine terminal command line
-
-    if (args.CommandLine) {
-
-      cmdLine = args.CommandLine;
-
-    } else if (args.command) {
-
-      cmdLine = args.command;
-
-    } else if (tcName === 'list_directory') {
-
-      cmdLine = `Get-ChildItem -Path "${args.path || '.'}"`;
-
-    } else if (tcName === 'read_file') {
-
-      cmdLine = `Get-Content -Path "${args.path || ''}"`;
-
-    } else if (tcName === 'write_file' || tcName === 'create_file') {
-
-      cmdLine = `Set-Content -Path "${args.path || ''}"`;
-
-    } else if (tcName === 'edit_file') {
-
+      const icon = f.endsWith('.py') ? '🐍' : (f.endsWith('.js') || f.endsWith('.ts') ? '📜' : '📄');
+      const add = diff.added !== undefined ? diff.added : 0;
+      const rem = diff.removed !== undefined ? diff.removed : 0;
+      stepLabel = `Edited ${icon} <span class="hover:underline text-zinc-200 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">${escapeHtml(f)}</span> <span class="text-emerald-400 font-semibold text-xs">+${add}</span> <span class="text-rose-400 font-semibold text-xs">-${rem}</span>`;
       cmdLine = `Edit-File -Path "${args.path || ''}"`;
-
-    } else if (tcName === 'inspect_project') {
-
-      cmdLine = `inspect_project -Path "${args.path || '.'}"`;
-
+    } else if (tcName === 'write_file' || tcName === 'create_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
+      const f = p.split('/').pop() || 'file';
+      const icon = f.endsWith('.py') ? '🐍' : '📄';
+      const add = diff.added !== undefined ? diff.added : (args.Content ? args.Content.split('\n').length : 1);
+      stepLabel = `Created ${icon} <span class="hover:underline text-zinc-200 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">${escapeHtml(f)}</span> <span class="text-emerald-400 font-semibold text-xs">+${add}</span> <span class="text-rose-400 font-semibold text-xs">-0</span>`;
+      cmdLine = `Set-Content -Path "${args.path || ''}"`;
+    } else if (tcName === 'read_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
+      const f = p.split('/').pop() || 'file';
+      stepLabel = `Ran inspect lines of <span class="hover:underline text-zinc-200 cursor-pointer font-medium" data-file-path="${escapeHtml(p)}" onclick="event.stopPropagation(); window.openFileDrawer(this.getAttribute('data-file-path'))">${escapeHtml(f)}</span>`;
+      cmdLine = `Get-Content -Path "${args.path || ''}"`;
+    } else if (tcName === 'run_python') {
+      const summary = args.summary || args.toolSummary;
+      stepLabel = summary ? `Ran ${escapeHtml(summary)}` : (args.script_path ? `Ran python ${escapeHtml(args.script_path.split(/[/\\]/).pop())}` : 'Ran run_python');
+      cmdLine = args.script_path ? `python "${args.script_path}"` : 'python -c "..."';
+    } else if (tcName.includes('desktop')) {
+      stepLabel = `Ran desktop ${escapeHtml(args.action || 'control')}`;
+      cmdLine = `desktop_control -action ${args.action || 'control'}`;
+    } else if (args.toolSummary || args.summary) {
+      stepLabel = `Ran ${escapeHtml(args.toolSummary || args.summary)}`;
+      cmdLine = args.CommandLine || args.command || `${tcName}`;
+    } else if (tcName.includes('cmd') || tcName.includes('command') || tcName.includes('powershell')) {
+      const rawCmd = args.CommandLine || args.command || '';
+      const cmdShort = rawCmd.length > 50 ? rawCmd.slice(0, 47) + '...' : rawCmd;
+      stepLabel = `Ran ${escapeHtml(cmdShort || 'command')}`;
+      cmdLine = rawCmd;
+    } else if (tcName === 'list_directory') {
+      const p = args.path || '.';
+      const dirName = p.replace(/\\/g, '/').split('/').filter(Boolean).pop() || p;
+      stepLabel = `Ran list ${escapeHtml(dirName)}`;
+      cmdLine = `Get-ChildItem -Path "${args.path || '.'}"`;
     } else if (tcName === 'web_search') {
-
+      stepLabel = `Ran search "${escapeHtml(args.query || '')}"`;
       cmdLine = `search "${args.query || ''}"`;
-
     } else {
-
-      const argPairs = Object.entries(args)
-
-        .map(([k, v]) => `-${k} ${typeof v === 'object' ? JSON.stringify(v) : v}`)
-
-        .join(' ');
-
-      cmdLine = `${tcName} ${argPairs}`.trim();
-
+      stepLabel = `Ran ${escapeHtml(tcName)}`;
+      cmdLine = `${tcName}`;
     }
-
-
 
     const formattedOutput = formatTerminalOutput(toolResult);
 
-
-
     return `
-
-      <div class="pl-1 text-xs space-y-1">
-
-        <button
-
-          class="flex items-center gap-2 text-left hover:text-white transition font-sans cursor-pointer group py-0.5 ${badgeClass}"
-
+      <div class="py-0.5">
+        <div
+          class="flex items-center justify-between text-zinc-300 hover:text-white cursor-pointer font-mono text-[13px] select-none"
           onclick="window.toggleToolDetail('${stepId}')"
-
         >
-
-          <span class="text-zinc-500">${isExpanded ? icons.chevronDown : icons.chevronRight}</span>
-
-          <span class="truncate font-medium">${stepLabel}</span>
-
-          ${isRunning ? '<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-1"></span>' : ''}
-
-          ${isWaitingApproval ? '<span class="text-amber-400 text-[10px] font-mono ml-1">(awaiting permission)</span>' : ''}
-
-          ${isRejected ? '<span class="text-rose-400 text-[10px] font-mono ml-1">(denied)</span>' : ''}
-
-          ${isCompleted ? `<span class="text-zinc-500 text-[10px] ml-1">(${toolResult.duration_ms || 25}ms)</span>` : ''}
-
-        </button>
-
-
+          <div class="flex items-center gap-2 truncate max-w-[90%]">
+            <span>${stepLabel}</span>
+            ${isRunning ? '<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-1"></span>' : ''}
+            ${isWaitingApproval ? '<span class="text-amber-400 text-[10px] font-mono ml-1">(awaiting permission)</span>' : ''}
+            ${isRejected ? '<span class="text-rose-400 text-[10px] font-mono ml-1">(denied)</span>' : ''}
+            ${isCompleted && toolResult.duration_ms ? `<span class="text-zinc-500 text-[10px] ml-1">(${toolResult.duration_ms}ms)</span>` : ''}
+          </div>
+          <span class="text-zinc-600 text-xs flex-shrink-0">${isExpanded ? '˅' : '>'}</span>
+        </div>
 
         ${isExpanded ? `
-
-          <div class="mt-2 ml-4 bg-[#0a0a0f] border border-white/10 rounded-xl p-3.5 font-mono text-xs text-zinc-300 shadow-2xl">
-
+          <div class="mt-2 ml-2 bg-[#0a0a0f] border border-white/10 rounded-xl p-3 font-mono text-xs text-zinc-300 shadow-2xl">
             <div class="flex items-start gap-2.5 text-zinc-100 font-mono text-xs leading-relaxed">
-
               <span class="text-emerald-400 font-bold select-none text-sm leading-none pt-0.5">$</span>
-
               <span class="text-zinc-100 font-semibold select-text break-all">${escapeHtml(cmdLine)}</span>
-
             </div>
-
             ${formattedOutput ? `
-
               <div class="mt-3 pt-3 border-t border-white/5 font-mono text-[11px] text-zinc-300 leading-relaxed overflow-x-auto whitespace-pre-wrap select-text max-h-96">
-
                 ${escapeHtml(formattedOutput)}
-
               </div>
-
             ` : ''}
-
             ${toolResult && toolResult.stderr ? `
-
               <div class="mt-2 text-rose-400 font-mono text-[11px] whitespace-pre-wrap select-text">
-
                 ${escapeHtml(toolResult.stderr)}
-
               </div>
-
             ` : ''}
-
-            ${isRunning ? `
-
-              <div class="mt-2 text-amber-400/80 font-mono text-[11px] italic">
-
-                Executing command...
-
-              </div>
-
-            ` : ''}
-
           </div>
-
         ` : ''}
-
       </div>
-
     `;
-
   }
 
 
@@ -6650,123 +6561,192 @@ function getActiveModel() {
 
 
 
-  function renderStreamingTurnInner() {
+    function renderTimelineStep(step) {
+    if (!step) return '';
+    const isExp = Boolean(state.expandedToolDetails && state.expandedToolDetails[step.id]);
 
+    if (step.type === 'thought') {
+      const dur = step.durationSec || 1;
+      return `
+        <div class="py-0.5">
+          <div
+            class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 cursor-pointer font-mono text-[13px] select-none"
+            onclick="window.toggleStepDetails('${step.id}')"
+          >
+            <span>Thought for ${dur}s</span>
+            <span class="text-zinc-600 text-xs">${isExp ? '˅' : '>'}</span>
+          </div>
+          ${isExp && step.content ? `
+            <div class="mt-1 text-xs font-mono text-zinc-400 bg-[#121216] border border-white/5 rounded-xl p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              ${escapeHtml(step.content)}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
 
+    const tcName = step.tool_name || 'tool';
+    const args = step.arguments || {};
+    const res = step.result || {};
+    const diff = step.diff_stats || {};
+
+    let icon = '📄';
+    let label = '';
+
+    if (tcName === 'run_python') {
+      icon = '🐍';
+      const summary = args.summary || args.toolSummary;
+      label = summary ? `Ran ${escapeHtml(summary)}` : 'Ran run_python';
+    } else if (tcName === 'edit_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
+      const f = p.split('/').pop() || 'file';
+      icon = f.endsWith('.py') ? '🐍' : (f.endsWith('.js') || f.endsWith('.ts') ? '📜' : '📄');
+      const add = diff.added !== undefined ? diff.added : 0;
+      const rem = diff.removed !== undefined ? diff.removed : 0;
+      return `
+        <div class="py-0.5">
+          <div class="flex items-center justify-between text-zinc-300 font-mono text-[13px] select-none">
+            <div class="flex items-center gap-1.5 cursor-pointer hover:text-white" onclick="window.toggleStepDetails('${step.id}')">
+              <span>Edited ${icon} <span class="text-zinc-200 hover:underline">${escapeHtml(f)}</span></span>
+              <span class="text-emerald-400 font-semibold text-xs">+${add}</span>
+              <span class="text-rose-400 font-semibold text-xs">-${rem}</span>
+            </div>
+            <span class="text-zinc-600 text-xs cursor-pointer" onclick="window.toggleStepDetails('${step.id}')">${isExp ? '˅' : '>'}</span>
+          </div>
+          ${isExp ? `
+            <div class="mt-1 bg-[#101015] border border-white/5 rounded-lg p-2.5 font-mono text-[11px] text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-40">
+              ${escapeHtml(JSON.stringify(args, null, 2))}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    } else if (tcName === 'write_file' || tcName === 'create_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
+      const f = p.split('/').pop() || 'file';
+      icon = f.endsWith('.py') ? '🐍' : '📄';
+      const add = diff.added !== undefined ? diff.added : (args.Content ? args.Content.split('\n').length : 1);
+      return `
+        <div class="py-0.5">
+          <div class="flex items-center justify-between text-zinc-300 font-mono text-[13px] select-none">
+            <div class="flex items-center gap-1.5 cursor-pointer hover:text-white" onclick="window.toggleStepDetails('${step.id}')">
+              <span>Created ${icon} <span class="text-zinc-200 hover:underline">${escapeHtml(f)}</span></span>
+              <span class="text-emerald-400 font-semibold text-xs">+${add}</span>
+              <span class="text-rose-400 font-semibold text-xs">-0</span>
+            </div>
+            <span class="text-zinc-600 text-xs cursor-pointer" onclick="window.toggleStepDetails('${step.id}')">${isExp ? '˅' : '>'}</span>
+          </div>
+          ${isExp ? `
+            <div class="mt-1 bg-[#101015] border border-white/5 rounded-lg p-2.5 font-mono text-[11px] text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-40">
+              ${escapeHtml((args.Content || '').slice(0, 500))}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    } else if (tcName === 'read_file') {
+      const p = (args.path || 'file').replace(/\\/g, '/');
+      const f = p.split('/').pop() || 'file';
+      label = `Ran inspect lines of ${escapeHtml(f)}`;
+    } else if (tcName.includes('command') || tcName.includes('powershell') || tcName.includes('cmd')) {
+      const rawCmd = args.CommandLine || args.command || '';
+      const summary = args.toolSummary || args.summary;
+      label = summary ? `Ran ${escapeHtml(summary)}` : `Ran ${escapeHtml(rawCmd.slice(0, 45) || 'command')}`;
+    } else if (tcName === 'list_directory') {
+      const p = (args.path || '.').replace(/\\/g, '/');
+      const d = p.split('/').filter(Boolean).pop() || p;
+      label = `Ran list ${escapeHtml(d)}`;
+    } else if (tcName === 'web_search') {
+      label = `Ran search "${escapeHtml(args.query || '')}"`;
+    } else {
+      label = `Ran ${escapeHtml(step.description || tcName)}`;
+    }
+
+    const durText = step.duration_ms ? ` (${step.duration_ms}ms)` : '';
 
     return `
-
-
-
-        <!-- Antigravity Active Timeline Header -->
-
-
-
-        <div class="pl-1 space-y-2">
-
-
-
-          ${state.streamingThought ? `
-
-
-
-            <div class="text-xs text-zinc-400">
-
-
-
-              <div class="flex items-center gap-1.5 font-medium py-1">
-
-
-
-                <span>Thinking</span>
-
-
-
-                <span class="text-zinc-500">${icons.chevronDown}</span>
-
-
-
+      <div class="py-0.5">
+        <div
+          class="flex items-center justify-between text-zinc-300 hover:text-white cursor-pointer font-mono text-[13px] select-none"
+          onclick="window.toggleStepDetails('${step.id}')"
+        >
+          <span class="truncate max-w-[90%]">${label}${durText}</span>
+          <span class="text-zinc-600 text-xs flex-shrink-0">${isExp ? '˅' : '>'}</span>
+        </div>
+        ${isExp ? `
+          <div class="mt-1 bg-[#101015] border border-white/5 rounded-lg p-2.5 font-mono text-[11px] text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-48">
+            <div class="text-zinc-400 font-semibold mb-1">$ ${escapeHtml(JSON.stringify(args))}</div>
+            ${res && (res.stdout || res.output || res.message) ? `
+              <div class="mt-1 text-zinc-300 border-t border-white/5 pt-1">
+                ${escapeHtml(String(res.stdout || res.output || res.message).slice(0, 800))}
               </div>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
 
+  function renderStreamingTurnInner() {
+    let liveSec = 0;
+    if (state.turnStartTime) {
+      liveSec = Math.max(1, Math.round((Date.now() - state.turnStartTime) / 1000));
+    }
 
+    const hasSteps = (state.currentTurnSteps && state.currentTurnSteps.length > 0) || state.streamingThought;
 
-              <div class="mt-1 text-xs font-mono text-zinc-400 bg-[#121216] border border-white/5 rounded-xl p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">
-
-
-
-                ${escapeHtml(state.streamingThought)}
-
-
-
-              </div>
-
-
-
+    return `
+      <div class="pl-1 space-y-2">
+        ${hasSteps ? `
+          <div class="text-xs text-zinc-400">
+            <div class="flex items-center gap-1.5 text-zinc-400 font-medium py-1 select-none">
+              <span>Running command</span>
+              <span class="text-zinc-500">${icons.chevronDown}</span>
             </div>
-
-
-
-          ` : ''}
-
-
-
-
-
-
-
+            <div class="pl-2 space-y-1 border-l border-white/10 ml-1 mt-1">
+              ${(state.currentTurnSteps || []).map(step => renderTimelineStep(step)).join('')}
+              ${(!state.currentTurnSteps || !state.currentTurnSteps.some(s => s.type === 'thought')) && state.streamingThought ? `
+                <div class="flex items-center justify-between text-zinc-400 hover:text-zinc-200 cursor-pointer py-0.5 font-mono text-[13px]" onclick="state.showLiveThought = !state.showLiveThought; updateStreamingDOM();">
+                  <span>Thought for ${state.thoughtDurationSec || liveSec}s</span>
+                  <span class="text-zinc-600 text-xs">${state.showLiveThought ? '˅' : '>'}</span>
+                </div>
+                ${state.showLiveThought ? `
+                  <div class="mt-1 text-xs font-mono text-zinc-400 bg-[#121216] border border-white/5 rounded-xl p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                    ${escapeHtml(state.streamingThought)}
+                  </div>
+                ` : ''}
+              ` : ''}
+              <!-- Active Working Status Indicator -->
+              <div class="flex items-center gap-2 text-zinc-300 font-medium py-1 text-[13px]">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-orb"></span>
+                <span class="text-zinc-200 font-medium">${escapeHtml(state.liveStatusText || 'Working')}</span>
+                ${liveSec > 0 ? `<span class="text-zinc-500 font-mono text-[11px]">(${liveSec}s)</span>` : ''}
+              </div>
+            </div>
+          </div>
+        ` : `
           <!-- Working indicator -->
           <div class="flex items-center gap-2 text-xs text-zinc-300 font-medium py-1">
             <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-orb"></span>
             <span class="text-zinc-200 font-medium">${escapeHtml(state.liveStatusText || 'Working...')}</span>
-            ${(() => {
-              let liveSec = 0;
-              if (state.turnStartTime) {
-                liveSec = Math.max(1, Math.round((Date.now() - state.turnStartTime) / 1000));
-              }
-              return liveSec > 0 ? `<span class="text-zinc-500 font-mono text-[11px]">(${liveSec}s)</span>` : '';
-            })()}
+            ${liveSec > 0 ? `<span class="text-zinc-500 font-mono text-[11px]">(${liveSec}s)</span>` : ''}
           </div>
+        `}
+      </div>
 
-
-
-        </div>
-
-
-
-
-
-
-
-        ${(() => {
-
-          const cleanStream = (state.streamingContent || '')
-
-            .replace(/<think>[\s\S]*?<\/think>/gi, '')
-
-            .replace(/<think>[\s\S]*$/gi, '')
-
-            .trim();
-
-          return cleanStream ? `
-
-            <div class="text-sm text-zinc-200 leading-relaxed space-y-3 pt-1 select-text" dir="auto">
-
-              ${renderMarkdown(cleanStream)}
-
-              <span class="inline-block w-1.5 h-4 bg-emerald-400 ml-1 animate-pulse"></span>
-
-            </div>
-
-          ` : '';
-
-        })()}
-
-
-
+      ${(() => {
+        const cleanStream = (state.streamingContent || '')
+          .replace(/<think>[\s\S]*?<\/think>/gi, '')
+          .replace(/<think>[\s\S]*$/gi, '')
+          .replace(/```(?:json)?\s*\{?\s*["'](?:tool_call|function_call|call|action|name|code)["'][\s\S]*$/gi, '')
+          .replace(/\{?\s*["'](?:tool_call|function_call)["'][\s\S]*$/gi, '')
+          .trim();
+        return cleanStream ? `
+          <div class="text-sm text-zinc-200 leading-relaxed space-y-3 pt-1 select-text" dir="auto">
+            ${renderMarkdown(cleanStream)}
+            <span class="inline-block w-1.5 h-4 bg-emerald-400 ml-1 animate-pulse"></span>
+          </div>
+        ` : '';
+      })()}
     `;
-
-
-
   }
 
 
@@ -12490,6 +12470,13 @@ function getActiveModel() {
 
 
   window.createNewConversation = createNewConversation;
+
+  window.toggleStepDetails = function(stepId) {
+    if (!state.expandedToolDetails) state.expandedToolDetails = {};
+    state.expandedToolDetails[stepId] = !state.expandedToolDetails[stepId];
+    updateStreamingDOM();
+    render();
+  };
 
   window.toggleWorkedGroup = (groupId) => {
 

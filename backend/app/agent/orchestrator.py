@@ -96,6 +96,22 @@ def _strip_raw_tool_calls(text: str) -> str:
         if is_tool_json:
             cleaned = cleaned[:start] + cleaned[end:]
 
+    # 4. Stripping unclosed in-progress / truncated tool code blocks (streaming or interrupted)
+    cleaned = re.sub(
+        r"```(?:json)?\s*\{?\s*(?:\"tool_call\"|\"function_call\"|\"call\"|\"action\"|\"name\"\s*:|\"code\"\s*:)[\s\S]*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
+    # 5. Stripping unclosed standalone JSON tool calls
+    cleaned = re.sub(
+        r"\{\s*\"(?:tool_call|function_call)\"[\s\S]*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
     # Remove any dangling trailing or leading lone curly braces left by incomplete LLM tokens
     cleaned = re.sub(r"^\s*[{}]\s*$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\n\s*[{}]\s*$", "", cleaned)
@@ -258,8 +274,8 @@ def _compute_safe_stream_views(raw_text: str) -> Tuple[str, str]:
     visible_str = _strip_raw_tool_calls(visible_str)
     visible_str, leaked_prefix = _strip_leading_meta_monologue(visible_str)
     low_vis_trimmed = visible_str.lstrip().lower()
-    tool_prefixes = ("```json", "```{", "<tool_call", "<function_call", "<tool", '{"tool_call"', '{"name":')
-    if any(low_vis_trimmed.startswith(p) for p in tool_prefixes) and not any(c in low_vis_trimmed for c in ("```\n", "```\r\n", "</tool_call>", "</function_call>", "</tool>")):
+    tool_prefixes = ("```json", "```{", "<tool_call", "<function_call", "<tool", '{"tool_call"', '{"name":', '{"action":')
+    if any(low_vis_trimmed.startswith(p) for p in tool_prefixes):
         return "", think_str
 
     if leaked_prefix:
@@ -723,6 +739,17 @@ def _summarize_action_for_user(tc_name: str, args: Dict[str, Any]) -> str:
         p = (args.get("path") or ".").replace(chr(92), "/")
         dname = p.split("/")[-1] or p
         return f"Listing directory: {dname}..."
+    elif tc_name == "run_python":
+        code = args.get("code") or ""
+        summary = args.get("summary") or args.get("toolSummary")
+        if summary:
+            return f"Running {summary}..."
+        if "zipfile" in code or "apk" in code.lower():
+            return "Inspecting APK package archive..."
+        first_line = [l.strip() for l in code.splitlines() if l.strip() and not l.strip().startswith(("#", "import", "from"))]
+        if first_line:
+            return f"Executing Python: {first_line[0][:40]}..."
+        return "Executing Python script..."
     elif tc_name.startswith("fetch_rss"):
         return "Fetching live RSS feeds..."
     return f"Running {tc_name}..."
@@ -1415,13 +1442,33 @@ class AgentOrchestrator:
 
                                 )
 
+                                diff_stats = {}
+                                if tc_name == "edit_file":
+                                    old_t = tc_args.get("target") or tc_args.get("Target") or ""
+                                    new_t = tc_args.get("replacement") or tc_args.get("Replacement") or ""
+                                    diff_stats = {
+                                        "added": len(new_t.splitlines()) if new_t else 0,
+                                        "removed": len(old_t.splitlines()) if old_t else 0,
+                                    }
+                                elif tc_name in ("write_file", "create_file"):
+                                    cnt = tc_args.get("content") or tc_args.get("Content") or ""
+                                    diff_stats = {
+                                        "added": len(cnt.splitlines()) if cnt else 1,
+                                        "removed": 0,
+                                    }
+
                                 await event_bus.publish(AgentEvent(
 
                                     event_type="tool_call_result",
 
                                     conversation_id=conversation_id,
 
-                                    data={"tool_call_id": tc["id"], "tool_name": tc_name, "result": tool_output},
+                                    data={
+                                        "tool_call_id": tc["id"],
+                                        "tool_name": tc_name,
+                                        "result": tool_output,
+                                        "diff_stats": diff_stats,
+                                    },
 
                                 ))
 
@@ -1789,8 +1836,35 @@ class AgentOrchestrator:
                 stream_token_count = 0
                 last_stream_save = time.time()
                 executed_screenshot_b64 = None
+                reported_stream_action = None
 
-                async for chunk in adapter.chat_stream(
+                stream_hb_stop = asyncio.Event()
+
+                async def _stream_heartbeat_sender():
+                    start_t = time.time()
+                    while not stream_hb_stop.is_set():
+                        await asyncio.sleep(2.0)
+                        if stream_hb_stop.is_set():
+                            break
+                        elapsed = int(time.time() - start_t)
+                        if stream_token_count == 0:
+                            desc = f"Connecting to model & processing context... ({elapsed}s)"
+                        elif reported_stream_action:
+                            desc = f"{reported_stream_action} ({elapsed}s)"
+                        elif current_turn_thought and not emitted_visible_len:
+                            desc = f"Thinking... ({elapsed}s)"
+                        else:
+                            desc = f"Generating response... ({elapsed}s)"
+                        await event_bus.publish(AgentEvent(
+                            event_type="heartbeat",
+                            conversation_id=conversation_id,
+                            data={"status": "working", "elapsed_seconds": elapsed, "description": desc}
+                        ))
+
+                stream_hb_task = asyncio.create_task(_stream_heartbeat_sender())
+
+                try:
+                    async for chunk in adapter.chat_stream(
                     model=model_name or "default",
                     messages=context_messages,
                     tools=available_tools,
@@ -1798,156 +1872,170 @@ class AgentOrchestrator:
                     conversation_id=conversation_id
                 ):
 
-                    if conversation_id in cls._cancelled_convs:
+                        if conversation_id in cls._cancelled_convs:
 
-                        break
-
-
-
-                    if chunk.delta_text:
-
-                        current_turn_text += chunk.delta_text
-
-                        stream_token_count += 1
+                            break
 
 
 
-                        # Real-time extraction of AI-determined session title (only if initial turn)
+                        if chunk.delta_text:
 
-                        if not title_extracted and ("<session_title>" in current_turn_text or "<title>" in current_turn_text):
+                            current_turn_text += chunk.delta_text
 
-                            title_m = re.search(r"<(?:session_title|title)>(.*?)</(?:session_title|title)>", current_turn_text, re.DOTALL)
+                            stream_token_count += 1
 
-                            if title_m:
+                            if not reported_stream_action and any(k in current_turn_text for k in ('"tool_call"', '<tool_call>', '"action"', '"function_call"')):
+                                m_tool = re.search(r'"name"\s*:\s*"([^"]+)"', current_turn_text)
+                                if m_tool:
+                                    tc_name = m_tool.group(1).strip()
+                                    desc = _summarize_action_for_user(tc_name, {})
+                                    reported_stream_action = desc
+                                    await event_bus.publish(AgentEvent(
+                                        event_type="status",
+                                        conversation_id=conversation_id,
+                                        data={"status": "working", "action": tc_name, "description": desc}
+                                    ))
 
-                                ai_title = title_m.group(1).strip()
 
-                                ai_title = re.sub(r'^[#*"\']+|[#*"\']+$', '', ai_title).strip()
 
-                                if len(ai_title) > 45:
+                            # Real-time extraction of AI-determined session title (only if initial turn)
 
-                                    ai_title = ai_title[:45].strip()
+                            if not title_extracted and ("<session_title>" in current_turn_text or "<title>" in current_turn_text):
 
-                                if ai_title:
+                                title_m = re.search(r"<(?:session_title|title)>(.*?)</(?:session_title|title)>", current_turn_text, re.DOTALL)
 
-                                    title_extracted = True
+                                if title_m:
 
-                                    logger.info(f"AI autonomously set session title: '{ai_title}'")
+                                    ai_title = title_m.group(1).strip()
 
-                                    await ConversationRepository.update_conversation(conversation_id, {"title": ai_title})
+                                    ai_title = re.sub(r'^[#*"\']+|[#*"\']+$', '', ai_title).strip()
+
+                                    if len(ai_title) > 45:
+
+                                        ai_title = ai_title[:45].strip()
+
+                                    if ai_title:
+
+                                        title_extracted = True
+
+                                        logger.info(f"AI autonomously set session title: '{ai_title}'")
+
+                                        await ConversationRepository.update_conversation(conversation_id, {"title": ai_title})
+
+                                        await event_bus.publish(AgentEvent(
+
+                                            event_type="conversation_renamed",
+
+                                            conversation_id=conversation_id,
+
+                                            data={"title": ai_title}
+
+                                        ))
+
+
+
+                            visible_safe, inline_think_safe = _compute_safe_stream_views(current_turn_text)
+
+                            if len(inline_think_safe) > emitted_inline_think_len:
+
+                                new_inline_thk = inline_think_safe[emitted_inline_think_len:]
+
+                                emitted_inline_think_len = len(inline_think_safe)
+
+                                current_turn_thought += new_inline_thk
+
+                                if enable_thinking is not False:
 
                                     await event_bus.publish(AgentEvent(
 
-                                        event_type="conversation_renamed",
+                                        event_type="thought",
 
                                         conversation_id=conversation_id,
 
-                                        data={"title": ai_title}
+                                        data={"delta": new_inline_thk}
 
                                     ))
 
 
 
-                        visible_safe, inline_think_safe = _compute_safe_stream_views(current_turn_text)
+                            if len(visible_safe) > emitted_visible_len:
 
-                        if len(inline_think_safe) > emitted_inline_think_len:
+                                new_vis = visible_safe[emitted_visible_len:]
 
-                            new_inline_thk = inline_think_safe[emitted_inline_think_len:]
-
-                            emitted_inline_think_len = len(inline_think_safe)
-
-                            current_turn_thought += new_inline_thk
-
-                            if enable_thinking is not False:
+                                emitted_visible_len = len(visible_safe)
 
                                 await event_bus.publish(AgentEvent(
 
-                                    event_type="thought",
+                                    event_type="token",
 
                                     conversation_id=conversation_id,
 
-                                    data={"delta": new_inline_thk}
+                                    data={"delta": new_vis}
 
                                 ))
 
 
 
-                        if len(visible_safe) > emitted_visible_len:
+                            # Incremental real-time persistence so page refresh or navigation never loses text
 
-                            new_vis = visible_safe[emitted_visible_len:]
+                            now_ts = time.time()
+                            if ((now_ts - last_stream_save) >= 1.5 or stream_token_count % 80 == 0) and asst_msg_id:
 
-                            emitted_visible_len = len(visible_safe)
+                                last_stream_save = now_ts
+
+                                clean_so_far, _ = _strip_internal_tags(current_turn_text)
+
+                                clean_so_far = _strip_raw_tool_calls(clean_so_far)
+
+                                clean_so_far, _ = _strip_leading_meta_monologue(clean_so_far)
+
+                                combined_so_far = (cumulative_assistant_text.strip() + ("\n\n" if cumulative_assistant_text.strip() and clean_so_far else "") + clean_so_far).strip()
+
+                                if combined_so_far:
+
+                                    try:
+
+                                        await ConversationRepository.update_message(
+
+                                            message_id=asst_msg_id,
+
+                                            content=combined_so_far,
+
+                                            thoughts=(cumulative_thoughts + current_turn_thought).strip() or None,
+
+                                            tokens=last_tokens
+
+                                        )
+
+                                    except Exception:
+
+                                        pass
+
+
+
+                        if chunk.delta_thought and enable_thinking is not False:
+
+                            current_turn_thought += chunk.delta_thought
 
                             await event_bus.publish(AgentEvent(
 
-                                event_type="token",
+                                event_type="thought",
 
                                 conversation_id=conversation_id,
 
-                                data={"delta": new_vis}
+                                data={"delta": chunk.delta_thought}
 
                             ))
 
 
 
-                        # Incremental real-time persistence so page refresh or navigation never loses text
+                        if chunk.tool_calls:
 
-                        now_ts = time.time()
-                        if ((now_ts - last_stream_save) >= 1.5 or stream_token_count % 80 == 0) and asst_msg_id:
+                            tool_calls_to_execute.extend(chunk.tool_calls)
 
-                            last_stream_save = now_ts
-
-                            clean_so_far, _ = _strip_internal_tags(current_turn_text)
-
-                            clean_so_far = _strip_raw_tool_calls(clean_so_far)
-
-                            clean_so_far, _ = _strip_leading_meta_monologue(clean_so_far)
-
-                            combined_so_far = (cumulative_assistant_text.strip() + ("\n\n" if cumulative_assistant_text.strip() and clean_so_far else "") + clean_so_far).strip()
-
-                            if combined_so_far:
-
-                                try:
-
-                                    await ConversationRepository.update_message(
-
-                                        message_id=asst_msg_id,
-
-                                        content=combined_so_far,
-
-                                        thoughts=(cumulative_thoughts + current_turn_thought).strip() or None,
-
-                                        tokens=last_tokens
-
-                                    )
-
-                                except Exception:
-
-                                    pass
-
-
-
-                    if chunk.delta_thought and enable_thinking is not False:
-
-                        current_turn_thought += chunk.delta_thought
-
-                        await event_bus.publish(AgentEvent(
-
-                            event_type="thought",
-
-                            conversation_id=conversation_id,
-
-                            data={"delta": chunk.delta_thought}
-
-                        ))
-
-
-
-                    if chunk.tool_calls:
-
-                        tool_calls_to_execute.extend(chunk.tool_calls)
-
-
+                finally:
+                    stream_hb_stop.set()
+                    stream_hb_task.cancel()
 
                 if conversation_id in cls._cancelled_convs:
 
