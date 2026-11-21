@@ -49,7 +49,7 @@ class BaseProviderAdapter(abc.ABC):
     def get_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         t = float(timeout or self.timeout_seconds)
         # 30s connect, max(t, 120s) read for deep model prefill/reasoning, 60s write
-        to = httpx.Timeout(read=max(t, 120.0), connect=30.0, write=60.0, pool=60.0)
+        to = httpx.Timeout(read=max(t, 300.0), connect=30.0, write=60.0, pool=60.0)
         # Local services (Ollama, LM Studio) connect directly; remote services use environment proxy
         trust_env = not self.is_local_url()
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=300.0)
@@ -59,7 +59,7 @@ class BaseProviderAdapter(abc.ABC):
         """Returns a persistent pooled AsyncClient for fast keep-alive reuse without TLS renegotiation overhead."""
         if self._shared_client is None or self._shared_client.is_closed:
             t = float(timeout or self.timeout_seconds)
-            to = httpx.Timeout(read=max(t, 120.0), connect=30.0, write=60.0, pool=60.0)
+            to = httpx.Timeout(read=max(t, 300.0), connect=30.0, write=60.0, pool=60.0)
             trust_env = not self.is_local_url()
             limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=300.0)
             self._shared_client = httpx.AsyncClient(timeout=to, trust_env=trust_env, limits=limits)

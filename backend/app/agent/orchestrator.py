@@ -41,7 +41,7 @@ from backend.app.agent.prompt_engine import PromptEngine
 
 from backend.app.agent.context_manager import ContextManager
 
-from backend.app.agent.tool_router import ToolRouter
+from backend.app.agent.tool_router import ToolRouter, _find_balanced_json_objects
 
 from backend.app.tools.registry import tool_registry
 
@@ -86,86 +86,62 @@ def _strip_raw_tool_calls(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # 3. Stripping standalone JSON objects with "tool_call" or "function_call"
-    cleaned = re.sub(
-        r"\{\s*\"(?:tool_call|function_call)\"\s*:\s*\{[\s\S]*?\}\s*\}",
-        "",
-        cleaned,
-        flags=re.IGNORECASE
-    )
+    # 3. Stripping standalone balanced JSON objects with tool invocation signatures
+    for start, end, obj_str in reversed(_find_balanced_json_objects(cleaned)):
+        is_tool_json = bool(re.search(r'\"(?:tool_call|function_call|action|tool)\"\s*:', obj_str, re.IGNORECASE))
+        if not is_tool_json:
+            m_name = re.search(r'\"name\"\s*:\s*\"([^\"]+)\"', obj_str)
+            if m_name and tool_registry.get_tool(m_name.group(1)):
+                is_tool_json = True
+        if is_tool_json:
+            cleaned = cleaned[:start] + cleaned[end:]
 
-    # Clean up excess whitespace / blank lines leftover from stripped blocks
+    # Remove any dangling trailing or leading lone curly braces left by incomplete LLM tokens
+    cleaned = re.sub(r"^\s*[{}]\s*$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\n\s*[{}]\s*$", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
-
 def _strip_internal_tags(text: str) -> Tuple[str, str]:
-
-    """Removes internal tags (<think>, <session_title>, <title>) and returns (clean_text, extracted_thoughts)."""
-
+    """Removes internal tags (<think>, channel thoughts, <session_title>, <title>) and returns (clean_text, extracted_thoughts)."""
     if not text:
-
         return "", ""
 
     thoughts_parts: List[str] = []
 
-
-
     def _collect_think(m: re.Match) -> str:
-
         inner = m.group(1).strip()
-
         if inner:
-
             thoughts_parts.append(inner)
-
         return ""
 
-
+    # Strip custom model channel thoughts: <|channel>thought ... <channel|> or </channel>thought <channel>
+    text = re.sub(r"<\|?channel\|?>thought\s*([\s\S]*?)<\|?channel\|?>\s*", _collect_think, text, flags=re.IGNORECASE)
+    text = re.sub(r"</channel>thought\s*<channel>\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\|?/?channel\|?>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\|?thought\|?>([\s\S]*?)<\|?/?thought\|?>", _collect_think, text, flags=re.IGNORECASE)
 
     # Handle dangling leading </think> emitted by templates that pre-open <think> in prompt prefix
-
     if "</think>" in text.lower():
-
         first_close = text.lower().find("</think>")
-
         first_open = text.lower().find("<think>")
-
         if first_open == -1 or first_close < first_open:
-
             dangling_thought = text[:first_close].strip()
-
             if dangling_thought:
-
                 thoughts_parts.append(dangling_thought)
-
             text = text[first_close + len("</think>"):]
 
-
-
     cleaned = re.sub(r"<think>([\s\S]*?)</think>", _collect_think, text, flags=re.IGNORECASE)
-
     unclosed = re.search(r"<think>([\s\S]*)$", cleaned, flags=re.IGNORECASE)
-
     if unclosed:
-
         inner = unclosed.group(1).strip()
-
         if inner:
-
             thoughts_parts.append(inner)
-
         cleaned = cleaned[:unclosed.start()]
 
     cleaned = re.sub(r"<(?:session_title|title)>[\s\S]*?</(?:session_title|title)>\s*", "", cleaned, flags=re.IGNORECASE)
-
     cleaned = re.sub(r"<(?:session_title|title)>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
-
     return cleaned.strip(), "\n".join(thoughts_parts).strip()
-
-
-
-
 
 def _compute_safe_stream_views(raw_text: str) -> Tuple[str, str]:
 
@@ -758,10 +734,23 @@ def _is_premature_halt(clean_text: str, user_prompt: str, iteration: int) -> boo
     status update, or a question asking the user for confirmation to continue,
     rather than a finished autonomous answer.
     """
-    if not clean_text or iteration == 0:
+    if not clean_text:
         return False
 
     t = clean_text.strip().lower()
+
+    # Check if text ends with dangling lone brace or incomplete statement (always premature halt)
+    if re.search(r"[{}]\s*$", t):
+        return True
+
+    # Action announcement without tool execution: \u0627\u0628\u062a\u062f\u0627\s*\u0628\u0631\u0631\u0633\u06cc\s*\u0645\u06cc\u200c\u06a9\u0646\u0645 | \u0634\u0631\u0648\u0639\s*\u0645\u06cc\u200c\u06a9\u0646\u0645
+    action_announcement = r"(\u0627\u0628\u062a\u062f\u0627\s*\u0628\u0631\u0631\u0633\u06cc\s*\u0645\u06cc\u200c\u06a9\u0646\u0645|\u0634\u0631\u0648\u0639\s*\u0645\u06cc\u200c\u06a9\u0646\u0645|\u0627\u0633\u062a\u062e\u0631\u0627\u062c\s*\u0645\u06cc\u200c\u06a9\u0646\u0645|\u0622\u063a\u0627\u0632\s*\u06a9\u0646\u0645|\b(i will start|let me first|first i will|i will begin|starting by)\b)"
+    if re.search(action_announcement, t, re.IGNORECASE) and iteration <= 2:
+        return True
+
+    # Normal conversational questions without action at iteration 0 are not premature halts
+    if iteration == 0:
+        return False
 
     # English confirmation or premature pause patterns
     en_patterns = (
@@ -793,7 +782,6 @@ def _is_premature_halt(clean_text: str, user_prompt: str, iteration: int) -> boo
     # Multi-step task halfway halt detection (iterations 1 or 2)
     if iteration <= 2 and user_prompt:
         up = user_prompt.lower()
-        # Case A: User asked to inspect/review an application or codebase, but model only gave a preliminary file list
         has_inspect_goal = bool(re.search(
             r"(\b(inspect|review|examine|analyze|audit|debug|codebase|app|application|project)\b|"
             r"(\u0628\u0631\u0631\u0633\u06cc|\u0686\u06a9|\u0622\u0646\u0627\u0644\u06cc\u0632|\u062a\u062d\u0644\u06cc\u0644|\u062f\u06cc\u0628\u0627\u06af|\u067e\u0631\u0648\u0698\u0647|\u0627\u067e\u0644\u06cc\u06a9\u06cc\u0634\u0646|\u0628\u0631\u0646\u0627\u0645\u0647|\u0633\u0648\u0631\u0633))",
@@ -809,7 +797,6 @@ def _is_premature_halt(clean_text: str, user_prompt: str, iteration: int) -> boo
         if has_inspect_goal and is_just_file_list:
             return True
 
-        # Case B: User asked to search or type in browser, but model only opened the URL and stopped
         has_desktop_action = bool(re.search(
             r"(\b(search|type|click|write|press|enter)\b|"
             r"(\u0633\u0631\u0686|\u0628\u0646\u0648\u06cc\u0633|\u062a\u0627\u06cc\u067e|\u06a9\u0644\u06cc\u06a9|\u0627\u06cc\u0646\u062a\u0631))",
@@ -947,11 +934,11 @@ class AgentOrchestrator:
                     collected.append(chunk.delta_text)
 
             raw_title, _ = _strip_internal_tags("".join(collected))
-
             ai_title = raw_title.strip().strip('"\'`').replace("\n", " ")
-
+            ai_title = re.sub(r"<\|?channel\|?>thought|<\|?/?thought\|?>|</channel>thought|<channel>|<channel\|>", "", ai_title, flags=re.IGNORECASE).strip()
+            ai_title = re.sub(r"<think>[\s\S]*?</think>|<think>[\s\S]*$", "", ai_title, flags=re.IGNORECASE).strip()
+            ai_title = re.sub(r"^[<|/ ]+|[>|/ ]+$", "", ai_title).strip()
             if ai_title:
-
                 ai_title = re.sub(r'^[#*"\']+|[#*"\']+$', '', ai_title).strip()
 
                 if len(ai_title) > 40:
@@ -2128,7 +2115,7 @@ class AgentOrchestrator:
                 if not tool_calls_to_execute:
                     # Autonomous Premature Halt Recovery: Check if the model paused prematurely to ask permission
                     # or gave an intermediate status update while multi-step tasks are still in progress.
-                    if iteration > 0 and iteration < (max_iterations - 2) and _is_premature_halt(clean_assistant_text, user_prompt, iteration):
+                    if iteration < (max_iterations - 2) and _is_premature_halt(clean_assistant_text, user_prompt, iteration):
                         logger.info(f"Detected premature pause at iteration {iteration}. Directing model to continue autonomously.")
                         if clean_assistant_text:
                             cumulative_assistant_text += clean_assistant_text + "\n\n"

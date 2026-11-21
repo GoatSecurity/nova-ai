@@ -11,62 +11,173 @@ def _clean_json_str(s: str) -> str:
     cleaned = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', s)
     return cleaned
 
+def _find_balanced_json_objects(text: str) -> List[Tuple[int, int, str]]:
+    """
+    Finds all top-level balanced JSON objects in text.
+    Correctly tracks quotes, escapes, and nested braces.
+    Returns list of (start_index, end_index, json_str).
+    """
+    results = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '{':
+            start = i
+            depth = 0
+            in_str = False
+            esc = False
+            valid = False
+            for j in range(start, n):
+                c = text[j]
+                if esc:
+                    esc = False
+                    continue
+                if c == '\\':
+                    if in_str:
+                        esc = True
+                    continue
+                if c == '"':
+                    in_str = not in_str
+                    continue
+                if not in_str:
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            results.append((start, j + 1, text[start:j + 1]))
+                            i = j + 1
+                            valid = True
+                            break
+            if not valid:
+                i += 1
+        else:
+            i += 1
+    return results
+
+def _safe_parse_json(s: str) -> Optional[Dict[str, Any]]:
+    """Attempts to parse JSON with multiple robust fallback strategies."""
+    # 1. Direct parse with strict=False (allows literal newlines/tabs inside strings)
+    try:
+        data = json.loads(s, strict=False)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # 2. Fix unescaped Windows backslashes
+    try:
+        cleaned = _clean_json_str(s)
+        data = json.loads(cleaned, strict=False)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # 3. Fix trailing commas
+    try:
+        s_fix = re.sub(r",\s*([\]}])", r"\1", s)
+        data = json.loads(s_fix, strict=False)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return None
+
 class ToolRouter:
     @staticmethod
     def extract_fallback_tool_calls(text: str) -> List[Dict[str, Any]]:
         """
         Extracts structured tool calls from model generated text
         when the model does not support native tool calling.
+        Uses balanced-brace scanning and supports multiple agent formats.
         """
+        if not text:
+            return []
+
         tool_calls = []
+        registered_tools = set(tool_registry._tools.keys()) if hasattr(tool_registry, "_tools") else set()
 
-        # Pattern 1: ```json { "tool_call": ... } ``` or ``` { "tool_call": ... } ```
-        code_block_pattern = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
-        for match in code_block_pattern.finditer(text):
-            block_content = match.group(1).strip()
-            if '"tool_call"' in block_content:
-                try:
-                    data = json.loads(block_content)
-                except json.JSONDecodeError:
-                    try:
-                        data = json.loads(_clean_json_str(block_content))
-                    except Exception:
-                        continue
-
-                tc = data.get("tool_call")
-                if isinstance(tc, dict) and "name" in tc:
-                    name = tc["name"]
-                    args = tc.get("arguments", {})
+        # 1. Check XML-style blocks first: <tool_call>...</tool_call> or <function_call>...</function_call>
+        xml_pattern = re.compile(r"<(?:tool_call|function_call|tool|call)>([\s\S]*?)</(?:tool_call|function_call|tool|call)>", re.IGNORECASE)
+        for match in xml_pattern.finditer(text):
+            inner = match.group(1).strip()
+            for _, _, obj_str in _find_balanced_json_objects(inner):
+                data = _safe_parse_json(obj_str)
+                if not data:
+                    continue
+                name, args = ToolRouter._extract_name_and_args(data, registered_tools)
+                if name:
                     tool_calls.append({
                         "id": f"fallback_{str(uuid.uuid4())[:8]}",
                         "name": name,
-                        "arguments": json.dumps(args) if isinstance(args, dict) else str(args)
+                        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
                     })
 
-        # Pattern 2: inline JSON { "tool_call": { ... } } without code blocks
-        if not tool_calls:
-            inline_pattern = re.compile(r"\{\s*\"tool_call\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
-            for match in inline_pattern.finditer(text):
-                block_content = match.group(0).strip()
-                try:
-                    data = json.loads(block_content)
-                except json.JSONDecodeError:
-                    try:
-                        data = json.loads(_clean_json_str(block_content))
-                    except Exception:
-                        continue
-
-                tc = data.get("tool_call")
-                if isinstance(tc, dict) and "name" in tc:
-                    name = tc["name"]
-                    args = tc.get("arguments", {})
+        # 2. Check Markdown code blocks: ```json { ... } ``` or ``` { ... } ```
+        code_block_pattern = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.IGNORECASE)
+        for match in code_block_pattern.finditer(text):
+            block_content = match.group(1).strip()
+            for _, _, obj_str in _find_balanced_json_objects(block_content):
+                data = _safe_parse_json(obj_str)
+                if not data:
+                    continue
+                name, args = ToolRouter._extract_name_and_args(data, registered_tools)
+                if name:
                     tool_calls.append({
                         "id": f"fallback_{str(uuid.uuid4())[:8]}",
                         "name": name,
-                        "arguments": json.dumps(args) if isinstance(args, dict) else str(args)
+                        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+                    })
+
+        # 3. Direct balanced JSON objects anywhere in text
+        if not tool_calls:
+            for _, _, obj_str in _find_balanced_json_objects(text):
+                data = _safe_parse_json(obj_str)
+                if not data:
+                    continue
+                name, args = ToolRouter._extract_name_and_args(data, registered_tools)
+                if name:
+                    tool_calls.append({
+                        "id": f"fallback_{str(uuid.uuid4())[:8]}",
+                        "name": name,
+                        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
                     })
 
         return tool_calls
+
+    @staticmethod
+    def _extract_name_and_args(data: Dict[str, Any], registered_tools: set) -> Tuple[Optional[str], Any]:
+        """Extracts tool name and arguments from various agent tool calling schemas."""
+        name = None
+        args = {}
+
+        # Standard schema: {"tool_call": {"name": ..., "arguments": ...}}
+        if "tool_call" in data and isinstance(data["tool_call"], dict):
+            tc = data["tool_call"]
+            name = tc.get("name")
+            args = tc.get("arguments", tc.get("parameters", {}))
+        # Direct schema: {"name": "<tool_name>", "arguments": ...}
+        elif "name" in data:
+            candidate = str(data["name"]).strip()
+            if candidate in registered_tools or "arguments" in data or "parameters" in data or tool_registry.get_tool(candidate):
+                name = candidate
+                args = data.get("arguments", data.get("parameters", {}))
+        # Action schema: {"action": "<tool_name>", "action_input": ...}
+        elif "action" in data:
+            candidate = str(data["action"]).strip()
+            if candidate in registered_tools or "action_input" in data or "arguments" in data or tool_registry.get_tool(candidate):
+                name = candidate
+                args = data.get("action_input", data.get("arguments", {}))
+        # Tool schema: {"tool": "<tool_name>", "args": ...}
+        elif "tool" in data:
+            candidate = str(data["tool"]).strip()
+            if candidate in registered_tools or "args" in data or "arguments" in data or tool_registry.get_tool(candidate):
+                name = candidate
+                args = data.get("args", data.get("arguments", {}))
+
+        return name, args
 
     @staticmethod
     def validate_tool_arguments(tool_name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
