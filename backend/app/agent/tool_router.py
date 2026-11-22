@@ -165,6 +165,20 @@ class ToolRouter:
                             logger.info(f"Successfully repaired and extracted interrupted tool call: {name}")
                             break
 
+        # 5. Extract runnable Python analysis code blocks as run_python tool calls if model generated raw code
+        if not tool_calls and "run_python" in registered_tools:
+            py_blocks = re.findall(r"```python\s*([\s\S]+?)\s*```", text, re.IGNORECASE)
+            for block in py_blocks:
+                b_stripped = block.strip()
+                if any(k in b_stripped for k in ("print(", "zipfile", "open(", "import os", "import sys", "def ", "requests.", "subprocess.", "apk_path")):
+                    tool_calls.append({
+                        "id": f"fallback_py_{str(uuid.uuid4())[:8]}",
+                        "name": "run_python",
+                        "arguments": json.dumps({"code": b_stripped, "summary": "Executing analysis script"}, ensure_ascii=False)
+                    })
+                    logger.info("Extracted runnable Python block from model response as run_python tool call")
+                    break
+
         return tool_calls
 
     @staticmethod

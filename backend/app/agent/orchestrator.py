@@ -1772,15 +1772,25 @@ class AgentOrchestrator:
 
 
 
-                # Prune to fit model context limit
+                # Prune to fit model context limit and compact multi-turn history into Active Progress Ledger
+                from backend.app.database.repositories.memory_repo import MemoryRepository
+                existing_summary = None
+                try:
+                    existing_summary = await MemoryRepository.get_summary(conversation_id)
+                except Exception:
+                    pass
 
                 context_messages, token_stats = ContextManager.prune_context(
-
                     system_prompt=system_prompt,
-
-                    messages=messages_for_turn
-
+                    messages=messages_for_turn,
+                    existing_summary=existing_summary
                 )
+
+                if token_stats.get("compacted_ledger"):
+                    try:
+                        await MemoryRepository.save_summary(conversation_id, token_stats["compacted_ledger"], asst_msg_id)
+                    except Exception:
+                        pass
 
                 last_tokens = token_stats.get("total_estimated_tokens", 0)
 
@@ -2253,6 +2263,13 @@ class AgentOrchestrator:
                         tokens=last_tokens
 
                     )
+
+                    try:
+                        updated_ledger = ContextManager.build_progress_ledger(messages_for_turn)
+                        if updated_ledger:
+                            await MemoryRepository.save_summary(conversation_id, updated_ledger, asst_msg_id)
+                    except Exception:
+                        pass
 
 
 
@@ -2850,6 +2867,13 @@ class AgentOrchestrator:
                     tokens=last_tokens
 
                 )
+
+            try:
+                updated_ledger = ContextManager.build_progress_ledger(messages_for_turn)
+                if updated_ledger:
+                    await MemoryRepository.save_summary(conversation_id, updated_ledger, asst_msg_id)
+            except Exception:
+                pass
 
             await event_bus.publish(AgentEvent(
 
